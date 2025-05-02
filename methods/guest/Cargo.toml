@@ -10,3 +10,4 @@ risc0-zkvm = { version = "2.0.2", default-features = false, features = ["std", "
 tiny-keccak = { version = "2.0.2", features = ["keccak"] }
 serde_json = "1.0"
 serde = { version = "1.0", default-features = false, features = ["derive"] }
+k256 = { version = "0.13.4" }
