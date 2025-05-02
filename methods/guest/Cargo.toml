@@ -1,0 +1,12 @@
+[package]
+name = "zkguard-guest"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+risc0-zkvm = { version = "2.0.2", default-features = false, features = ["std", "unstable"] }
+tiny-keccak = { version = "2.0.2", features = ["keccak"] }
+serde_json = "1.0"
+serde = { version = "1.0", default-features = false, features = ["derive"] }

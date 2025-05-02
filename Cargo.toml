@@ -1,0 +1,20 @@
+[package]
+name = "zkguard-auth-policy"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4.0", features = ["derive"] }
+zkguard-methods = { path = "methods" }
+risc0-zkvm = { version = "2.0.2" }
+serde = { version = "1.0", default-features = false, features = ["derive"] }
+anyhow = "1.0"
+dotenv = "0.15"
+
+[dev-dependencies]
+hex = "0.4"
+
+[features]
+cuda = ["risc0-zkvm/cuda"]
+default = []
+prove = ["risc0-zkvm/prove"]
