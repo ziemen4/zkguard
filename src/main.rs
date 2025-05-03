@@ -7,66 +7,71 @@ use sha3::{Digest as Sha3Digest, Keccak256};
 // Environment utilities
 use dotenv::dotenv;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct TxWitness {
-    caller:   [u8; 20],
-    calldata: Vec<u8>,
-    value:    u128,
-    tx_hash:  [u8; 32],
-    sigs:     Vec<Vec<u8>>,   // 65-byte RSV each
-    deadline: u64,
+/// A unified “request” type: either an EOA tx or an ERC-4337 op.
+/// We use internally-typed numeric fields for simplicity;
+/// JSON/ABI hex parsing happens at the edges.
+///
+/// The `#[serde(tag="kind")]` form ensures the first byte
+/// tells us which variant we’re deserializing.
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind")]
+pub enum AuthRequest {
+    Transaction {
+        /// EOA “from”
+        from: [u8;20],
+        /// target contract or 0x00… for creations
+        to:   [u8;20],
+        /// msg.value
+        value: u128,
+        /// raw calldata (abi‐encoded selector + args)
+        data:  Vec<u8>,
+        /// signatures over the entire RLP‐encoded tx blob
+        sigs:  Vec<Vec<u8>>,
+    },
+    UserOperation {
+        sender:                    [u8;20],
+        nonce:                     u128,
+        factory:                   [u8;20],
+        factory_data:              Vec<u8>,
+        call_data:                 Vec<u8>,
+        call_gas_limit:            u128,
+        verification_gas_limit:    u128,
+        pre_verification_gas:      u128,
+        max_fee_per_gas:           u128,
+        max_priority_fee_per_gas:  u128,
+        paymaster:                 [u8;20],
+        paymaster_verification_gas_limit: u128,
+        paymaster_post_op_gas_limit:      u128,
+        paymaster_data:            Vec<u8>,
+        signature:                 Vec<u8>,
+    },
 }
 
-// ---------------- helper --------------------------
-
-fn keccak32(data: &[u8]) -> [u8; 32] {
-    let mut h = Keccak256::new();
-    h.update(data);
-    h.finalize().into()
-}
 
 // ---------------- demo run ------------------------
 
 fn main() -> anyhow::Result<()> {
     dotenv().ok();
 
-//----------------------------------------------------------
-    // Build a sample calldata: transfer(allowlisted, 0.05 ETH)
-    //----------------------------------------------------------
-    const TRANSFER_SELECTOR: [u8; 4] = [0xa9, 0x05, 0x9c, 0xbb];
-    let dest: [u8; 20] = [
-        0x12, 0x34, 0x56, 0x78, 0x90, 0xab, 0xcd, 0xef, //
-        0x12, 0x34, 0x56, 0x78, 0x90, 0xab, 0xcd, 0xef, //
-        0x12, 0x34, 0x56, 0x78,
-    ];
-    let amount: u128 = 50_000_000_000_000_000; // 0.05 ETH
+    // --- demo: build a simple Transaction variant ------------
+    let transfer_selector = [0xa9,0x05,0x9c,0xbb];
+    let to = [0x12;20];
+    let mut data = transfer_selector.to_vec();
+    data.extend([0u8;12]);
+    data.extend(to);
+    data.extend(50_000_000_000_000_000u128.to_be_bytes());
 
-    let mut calldata = Vec::from(TRANSFER_SELECTOR);
-    calldata.extend([0u8; 12]);      // left-pad address
-    calldata.extend(dest);
-    calldata.extend(amount.to_be_bytes());
-
-    //----------------------------------------------------------
-    // Dummy signatures – just correct length for the stub
-    //----------------------------------------------------------
-    let dummy_sig = vec![0u8; 65];
-    let sigs = vec![dummy_sig.clone(), dummy_sig]; // 2-of-3 satisfied
-
-    //----------------------------------------------------------
-    // Assemble witness & prove
-    //----------------------------------------------------------
-    let witness = TxWitness {
-        caller: dest,
-        calldata: calldata.clone(),
+    let tx_req = AuthRequest::Transaction {
+        from: to,
+        to,
         value: 0,
-        tx_hash: keccak32(&calldata),
-        sigs,
-        deadline: 1_716_000_000,
+        data,
+        sigs: vec![vec![0u8;65], vec![0u8;65]], // dummy 2-of-3
     };
 
-    // Spin up the prover
+    // --- serialize and prove ----------------
     let env = ExecutorEnv::builder()
-        .write(&to_vec(&witness)?)
+        .write(&to_vec(&tx_req)?)
         .unwrap()
         .build()
         .unwrap();

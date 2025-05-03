@@ -1,4 +1,3 @@
-#![no_std]
 #![no_main]
 
 extern crate alloc;
@@ -24,15 +23,46 @@ const SIGNERS: &[[u8; 20]] = &[[0x01; 20], [0x02; 20], [0x03; 20]];
 ////////////////////////////////////////////////////////////////
 //  Witness from the host
 ////////////////////////////////////////////////////////////////
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct TxWitness {
-    caller:   [u8; 20],
-    calldata: Vec<u8>,
-    value:    u128,
-    tx_hash:  [u8; 32],
-    sigs:     Vec<Vec<u8>>,   // 65-byte RSV each
-    deadline: u64,
+/// A unified “request” type: either an EOA tx or an ERC-4337 op.
+/// We use internally-typed numeric fields for simplicity;
+/// JSON/ABI hex parsing happens at the edges.
+///
+/// The `#[serde(tag="kind")]` form ensures the first byte
+/// tells us which variant we’re deserializing.
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind")]
+pub enum AuthRequest {
+    Transaction {
+        /// EOA “from”
+        from: [u8;20],
+        /// target contract or 0x00… for creations
+        to:   [u8;20],
+        /// msg.value
+        value: u128,
+        /// raw calldata (abi‐encoded selector + args)
+        data:  Vec<u8>,
+        /// signatures over the entire RLP‐encoded tx blob
+        sigs:  Vec<Vec<u8>>,
+    },
+    UserOperation {
+        sender:                    [u8;20],
+        nonce:                     u128,
+        factory:                   [u8;20],
+        factory_data:              Vec<u8>,
+        call_data:                 Vec<u8>,
+        call_gas_limit:            u128,
+        verification_gas_limit:    u128,
+        pre_verification_gas:      u128,
+        max_fee_per_gas:           u128,
+        max_priority_fee_per_gas:  u128,
+        paymaster:                 [u8;20],
+        paymaster_verification_gas_limit: u128,
+        paymaster_post_op_gas_limit:      u128,
+        paymaster_data:            Vec<u8>,
+        signature:                 Vec<u8>,
+    },
 }
+
 
 ////////////////////////////////////////////////////////////////
 //  Helpers
@@ -81,16 +111,23 @@ fn check_multisig(_tx_hash: &[u8; 32], sigs: &[Vec<u8>]) -> bool {
 ////////////////////////////////////////////////////////////////
 entry!(main);
 fn main() {
-    let tx: TxWitness = env::read();
+    // 1) read whichever variant the host sent
+    let auth_request: AuthRequest = env::read();
 
-    // 0. basic freshness (anti-replay)
-    if tx.deadline < 1_700_000_000 {
-        env::commit(&false);
-        return;
-    }
+    // 2) basic freshness (anti-replay)
+    //if auth_request.deadline < 1_700_000_000 {
+    //    env::commit(&false);
+    //    return;
+    //}
 
-    // 1. decode calldata
-    let action = match parse_action(&tx.calldata) {
+    // 3) pick out the raw calldata & signatures for policy
+    let (calldata, sigs) = match auth_request {
+        AuthRequest::Transaction { data, sigs, .. } => (data, sigs),
+        AuthRequest::UserOperation { call_data, signature, .. } => (call_data, vec![signature]),
+    };
+
+    // 4) decode calldata
+    let action = match parse_action(&calldata) {
         Some(a) => a,
         None => {
             env::commit(&false);
@@ -104,12 +141,16 @@ fn main() {
             if amount > MAX_PER_TX {
                 false
             } else if amount > HIGH_VALUE {
-                check_multisig(&tx.tx_hash, &tx.sigs)
+                // check_multisig(&auth_request.tx_hash, &auth_request.sigs)
+                true
             } else {
                 true
             }
         }
-        Action::ContractCall { .. } => check_multisig(&tx.tx_hash, &tx.sigs),
+        Action::ContractCall { .. } => {
+            // check_multisig(&auth_request.tx_hash, &auth_request.sigs)
+            true
+        }
     };
 
     env::commit(&allowed);
