@@ -1,0 +1,13 @@
+[package]
+name    = "zkguard_core"
+version = "0.1.0"
+edition = "2021"
+publish = false           # keep this internal for now
+
+[lib]
+crate-type = ["rlib"]     # ordinary Rust library
+
+[dependencies]
+serde        = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
+tiny-keccak = { version = "2.0.2", features = ["keccak"] }
+risc0-zkvm = { version = "2.0.2", default-features = false, features = ["std", "unstable"] }
