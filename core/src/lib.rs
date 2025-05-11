@@ -14,13 +14,6 @@ pub mod constants {
     pub const TRANSFER_SELECTOR:       [u8; 4] = [0xa9, 0x05, 0x9c, 0xbb];
     /// selector for `contractCall(address,uint256,bytes)`
     pub const CONTRACTCALL_SELECTOR:   [u8; 4] = [0xb6, 0x1d, 0x27, 0xf6];
-
-    pub const MAX_PER_TX:   u128  = 100_000_000_000_000_000;   // 0.1 ETH
-    pub const HIGH_VALUE:   u128  = 50_000_000_000_000_000;    // 0.05 ETH
-    pub const REQUIRED_SIGS: usize = 2;                        // 2‑of‑3 multisig
-
-    /// Hard‑coded owners for the PoC
-    pub const SIGNERS: &[[u8; 20]] = &[[0x01; 20], [0x02; 20], [0x03; 20]];
 }
 
 ////////////////////////////////////////////////////////////////
@@ -39,35 +32,31 @@ pub fn keccak256(bytes: &[u8]) -> [u8; 32] {
 /// Compact action enum produced by [`parse_action`]
 #[derive(Clone, Copy, Debug)]
 pub enum Action<'a> {
-    Transfer     { to: [u8; 20], amount: u128 },
+    Transfer     { erc20_address: [u8; 20], to: [u8; 20], amount: u128 },
     ContractCall { target: [u8; 20], value: u128, data: &'a [u8] },
 }
 
 /// Very small, fixed‑layout ABI decoder for the two hard‑coded
 /// selectors. Returns [`Action`] on success.
-pub fn parse_action(data: &[u8]) -> Option<Action<'_>> {
+pub fn parse_action<'a>(target: &[u8], data: &'a [u8]) -> Option<Action<'a>> {
     use constants::*;
     let sel = data.get(..4)?;
     if sel == TRANSFER_SELECTOR {
+        println!("Data after selector: {:?}", &data[4..]);
+        println!("Length of data: {:?}", data.len());
+
         let to: [u8; 20] = data.get(16..36)?.try_into().ok()?;
+
         let mut amt = [0u8; 16];
-        amt.copy_from_slice(data.get(36..52)?);
+        amt.copy_from_slice(data.get(52..68)?);
+        println!("Amount bytes: {:?}", amt);
         let amount = u128::from_be_bytes(amt);
-        Some(Action::Transfer { to, amount })
-    } else if sel == CONTRACTCALL_SELECTOR {
-        let target: [u8; 20] = data.get(16..36)?.try_into().ok()?;
-        let mut val = [0u8; 16];
-        val.copy_from_slice(data.get(36..52)?);
-        let value = u128::from_be_bytes(val);
-        Some(Action::ContractCall { target, value, data: &data[52..] })
+
+        let erc20_address: [u8; 20] = target.try_into().ok()?;
+        Some(Action::Transfer { erc20_address, to, amount })
     } else {
         None
     }
-}
-
-/// **Stub** multisig check – merely counts signatures that *look* OK
-pub fn check_multisig(_tx_hash: &[u8; 32], sigs: &[Vec<u8>]) -> bool {
-    sigs.iter().filter(|v| v.len() == 65).count() >= constants::REQUIRED_SIGS
 }
 
 ////////////////////////////////////////////////////////////////
@@ -85,9 +74,10 @@ pub enum AuthRequest {
         to:     [u8; 20],
         value:  u128,
         data:   Vec<u8>,
-        sigs:   Vec<Vec<u8>>,
     },
     UserOperation {
+        // TODO: See how to this appropriately
+        data:                       Vec<u8>,
         sender:                     [u8; 20],
         nonce:                      u128,
         factory:                    [u8; 20],
@@ -104,4 +94,20 @@ pub enum AuthRequest {
         paymaster_data:             Vec<u8>,
         signature:                  Vec<u8>,
     },
+}
+
+impl AuthRequest {
+    pub fn data(&self) -> Option<&Vec<u8>> {
+        match self {
+            AuthRequest::Transaction { data, .. } => Some(data),
+            AuthRequest::UserOperation { data, .. } => Some(data),
+        }
+    }
+
+    pub fn target(&self) -> Option<&[u8; 20]> {
+        match self {
+            AuthRequest::Transaction { to, .. } => Some(to),
+            AuthRequest::UserOperation { sender, .. } => Some(sender),
+        }
+    }
 }
