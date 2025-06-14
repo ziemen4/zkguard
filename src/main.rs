@@ -22,7 +22,7 @@ fn main() -> anyhow::Result<()> {
     // Define the amount 
     let amount= 1_000_000u128; // 1e6 tokens
 
-    // Define the ERC20 target address
+    // Define the ERC20 contract address
     let erc20_str = "0xdAC17F958D2ee523a2206206994597C13D831ec7";
     let erc20: Vec<u8> = hex::decode(erc20_str.strip_prefix("0x").unwrap()).unwrap();
 

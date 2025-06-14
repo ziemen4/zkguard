@@ -31,16 +31,16 @@ pub fn keccak256(bytes: &[u8]) -> [u8; 32] {
 
 /// Compact action enum produced by [`parse_action`]
 #[derive(Clone, Copy, Debug)]
-pub enum Action<'a> {
+pub enum Action {
     Transfer     { erc20_address: [u8; 20], to: [u8; 20], amount: u128 },
-    ContractCall { target: [u8; 20], value: u128, data: &'a [u8] },
 }
 
 /// Very small, fixed‑layout ABI decoder for the two hard‑coded
 /// selectors. Returns [`Action`] on success.
-pub fn parse_action<'a>(target: &[u8], data: &'a [u8]) -> Option<Action<'a>> {
+pub fn parse_action<'a>(target: &[u8], data: &'a [u8]) -> Option<Action> {
     use constants::*;
     let sel = data.get(..4)?;
+    
     if sel == TRANSFER_SELECTOR {
         println!("Data after selector: {:?}", &data[4..]);
         println!("Length of data: {:?}", data.len());

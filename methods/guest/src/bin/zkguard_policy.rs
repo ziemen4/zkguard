@@ -109,10 +109,6 @@ fn run_policy_checks(target: &[u8; 20], auth_request: &AuthRequest) -> bool {
                 true
             }
         }
-        Action::ContractCall { .. } => {
-            // TODO: Implement contract call policy
-            true
-        }
     };
     println!("Policy result: {}", allowed);
     allowed
