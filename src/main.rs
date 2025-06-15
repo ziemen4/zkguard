@@ -1,73 +1,103 @@
+use anyhow::Result;
+use bincode::Options;
 use dotenv::dotenv;
 use risc0_zkvm::{default_prover, Digest, ExecutorEnv};
-use zkguard_methods::{ZKGUARD_POLICY_ELF, ZKGUARD_POLICY_ID};
+use std::collections::HashMap;
 use zkguard_core::{
-    constants::TRANSFER_SELECTOR,
-    AuthRequest,
+    constants::TRANSFER_SELECTOR, ActionType, AssetPattern, DestinationPattern, Policy, PolicyLine,
+    SignerPattern, TxType, UserAction,
 };
-use bincode::Options;
+use zkguard_methods::{ZKGUARD_POLICY_ELF, ZKGUARD_POLICY_ID};
 
-// --------------- demo run ---------------------
-fn main() -> anyhow::Result<()> {
+fn encode<T: serde::Serialize>(v: &T) -> Vec<u8> {
+    bincode::DefaultOptions::new()
+        .with_fixint_encoding()
+        .serialize(v)
+        .unwrap()
+}
+
+fn main() -> Result<()> {
     dotenv().ok();
 
-    // Some from address
-    let from_str = "0xa6321351cC21881f203818aA1F78851Df974Bcc2";
-    let from = hex::decode(from_str.strip_prefix("0x").unwrap()).unwrap();
+    // ---------------------------------------------------------------------
+    // Addresses ------------------------------------------------------------
+    // ---------------------------------------------------------------------
+    let from = hex::decode("a6321351cC21881f203818aA1F78851Df974Bcc2")?;
+    let to = hex::decode("12f3a2b4cC21881f203818aA1F78851Df974Bcc2")?;
+    let erc20 = hex::decode("dAC17F958D2ee523a2206206994597C13D831ec7")?; // USDT
 
-    // Some to address (where we want to send the ERC20)
-    let to_str = "0x12f3a2b4cC21881f203818aA1F78851Df974Bcc2";
-    let to = hex::decode(to_str.strip_prefix("0x").unwrap()).unwrap();
+    // ---------------------------------------------------------------------
+    // Craft calldata for `transfer(to, amount)` ---------------------------
+    // ---------------------------------------------------------------------
+    let amount: u128 = 1_000_000; // 1 USDT (6 decimals → 1e6)
+    let mut data = TRANSFER_SELECTOR.to_vec(); // 4-byte selector
+    data.extend([0u8; 12]); // pad for `to`
+    data.extend(&to); // 20-byte recipient
+    data.extend([0u8; 16]); // pad for uint256 hi-bits
+    data.extend(&amount.to_be_bytes()); // 16-byte low bits
 
-    // Define the amount 
-    let amount= 1_000_000u128; // 1e6 tokens
-
-    // Define the ERC20 contract address
-    let erc20_str = "0xdAC17F958D2ee523a2206206994597C13D831ec7";
-    let erc20: Vec<u8> = hex::decode(erc20_str.strip_prefix("0x").unwrap()).unwrap();
-
-    // Create calldata for a transfer of 1 (1e6) ERC20 token to "to"
-    // transfer(address,uint256)
-
-    // Encode to 4 bytes for the selector (frist 4 bytes of keccak256("transfer(address,uint256)"))
-    let mut data = TRANSFER_SELECTOR.to_vec();
-    // Encode to 32 bytes, pad with 12 zeros and then 20 bytes of "to"
-    data.extend([0u8; 12]);           // pad for `to` offset
-    data.extend(to);                  // recipient
-
-    // Encode to 32 bytes, pad with 16 zeros and then 16 bytes of amount (since in Rust we have u128)
-    data.extend([0u8; 16]);           // pad for `amount` offset
-    data.extend(&amount.to_be_bytes()); // amount
-    println!("Amount bytes: {:?}", &data[36..]);
-    
-
-    let tx_req = AuthRequest::Transaction {
-        from: from.try_into().unwrap(),
-        to: erc20.try_into().unwrap(),
+    let user_action = UserAction {
+        to: erc20.clone().try_into().unwrap(),
         value: 0,
-        data
+        data,
+        signer: from.clone().try_into().unwrap(),
     };
 
-    let bytes = bincode::DefaultOptions::new()
-        .with_fixint_encoding()
-        .serialize(&tx_req)?;
+    // ---------------------------------------------------------------------
+    // Build the *policy* ---------------------------------------------------
+    // ---------------------------------------------------------------------
+    let rule = PolicyLine {
+        id: 1,
+        tx_type: TxType::Transfer,
+        destination: DestinationPattern::Any, // no restriction
+        signer: SignerPattern::Exact(from.clone().try_into().unwrap()),
+        asset: AssetPattern::Exact(erc20.clone().try_into().unwrap()),
+        action: ActionType::Allow,
+    };
+    let policy: Policy = vec![rule];
 
+    // Empty maps (we're not using groups / allow-lists for this rule)
+    let groups: HashMap<String, Vec<[u8; 20]>> = HashMap::new();
+    let allowls: HashMap<String, Vec<[u8; 20]>> = HashMap::new();
+
+    // ---------------------------------------------------------------------
+    // Encode frames (bincode + fixint) ----------------------------------
+    // ---------------------------------------------------------------------
+    let user_action_bytes = encode(&user_action);
+    let policy_bytes = encode(&policy);
+    let group_bytes = encode(&groups);
+    let allow_bytes = encode(&allowls);
+
+    // ---------------------------------------------------------------------
+    // Prove ----------------------------------------------------------------
+    // ---------------------------------------------------------------------
     let env = ExecutorEnv::builder()
-        .write_frame(&bytes)
+        .write_frame(&user_action_bytes)
+        .write_frame(&policy_bytes)
+        .write_frame(&group_bytes)
+        .write_frame(&allow_bytes)
         .build()?;
 
     println!("Proving...");
-    let prover  = default_prover();
-    let receipt  = prover.prove(env, ZKGUARD_POLICY_ELF)?.receipt;
+    let prover = default_prover();
+    let receipt = prover.prove(env, ZKGUARD_POLICY_ELF)?.receipt;
     println!("Proved!");
 
-    // --- verify the receipt -------------------
+    // ---------------------------------------------------------------------
+    // Verify ---------------------------------------------------------------
+    // ---------------------------------------------------------------------
     println!("Verifying...");
-    let digest: Digest = receipt.journal.decode()?;
-    receipt.verify(ZKGUARD_POLICY_ID)
-           .expect("receipt verification failed");
+    receipt.verify(ZKGUARD_POLICY_ID)?;
     println!("Verified!");
 
-    println!("I know {:x?}", digest);
+    // The guest commits four 32-byte hashes; here we just dump them:
+    println!("Decoding committed hashes... ");
+    let hashes: Vec<Digest> = receipt.journal.decode()?;
+    println!("Decoded committed hashes.\n");
+    println!("Committed hashes (call, policy, groups, allow):");
+    for (i, h) in hashes.iter().enumerate() {
+        println!("  {}: {:x?}", i, h);
+    }
+
     Ok(())
 }

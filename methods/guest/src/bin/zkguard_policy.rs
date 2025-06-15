@@ -1,115 +1,122 @@
-#![no_main]
-
 extern crate alloc;
-
 use alloc::vec::Vec;
-use risc0_zkvm::guest::{entry, env};
+
 use bincode::Options;
-use zkguard_core::{
-    parse_action,
-    Action,
-    AuthRequest,
-    keccak256,
-};
-use std::collections::HashMap;
-use once_cell::sync::Lazy;
-use hex_literal::hex;
+use risc0_zkvm::guest::{entry, env};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use zkguard_core::{keccak256, Policy, UserAction};
 
-/// USDT contract address in Ethereum mainnet
-pub const USDT_CONTRACT: [u8; 20] = hex!("dAC17F958D2ee523a2206206994597C13D831ec7");
-/// MAX_PER_TX_MAP for defined ERC20 tokens
-pub static MAX_PER_TX_MAP: Lazy<HashMap<[u8; 20], u128>> = Lazy::new(|| {
-    let mut m = HashMap::new();
-    m.insert(USDT_CONTRACT, 100_000_000); // 100 USDT
-    m
-});
+use zkguard_guest::policy_engine::run_policy_checks;
 
-////////////////////////////////////////////////////////////////
-//  Entry ‑‑ policy evaluation
-////////////////////////////////////////////////////////////////
+// TODO: benchmark whether *rejecting* non-canonical inputs and failing the
+//       proof is cheaper than the in-circuit canonicalisation we do here.
+/// Canonicalises a map of lists: sorts addresses ascending (dedup) and uses
+/// a `BTreeMap` so keys are ordered.  Returns `(canonical, bytes)` where
+/// `bytes` is the bincode serialization of the canonical structure.
+fn canonicalise_lists(
+    raw: HashMap<String, Vec<[u8; 20]>>,
+) -> (BTreeMap<String, Vec<[u8; 20]>>, Vec<u8>) {
+    use bincode::Options;
+    let mut canon: BTreeMap<String, Vec<[u8; 20]>> = BTreeMap::new();
+    for (k, mut v) in raw {
+        v.sort();
+        v.dedup();
+        canon.insert(k, v);
+    }
+    let bytes = bincode::DefaultOptions::new()
+        .with_fixint_encoding()
+        .serialize(&canon)
+        .expect("canonical serialise");
+    (canon, bytes)
+}
+
+// TODO: benchmark whether *rejecting* non-canonical inputs and failing the
+//       proof is cheaper than the in-circuit canonicalisation we do here.
+fn canonicalise_policy(mut raw: Policy) -> (Policy, Vec<u8>) {
+    raw.sort_by_key(|l| l.id);
+    // Detect duplicate IDs (optional, but guards against ambiguity):
+    for win in raw.windows(2) {
+        if win[0].id == win[1].id {
+            panic!("duplicate policy id");
+        }
+    }
+    let bytes = bincode::DefaultOptions::new()
+        .with_fixint_encoding()
+        .serialize(&raw)
+        .expect("serialise canonical policy");
+    (raw, bytes)
+}
+
+// ================================================================
+// Implements a line‑by‑line policy evaluator for wallet actions and
+// exposes a `main` that the ZKP wrapper invokes.  Frames sent by the
+// host arrive in the following order:
+//   1. UserAction   (bincode, fixint)
+//   2. Policy       (Vec<PolicyLine>)
+//   3. Groups       (HashMap<String, Vec<[u8;20]>>)
+//   4. Allow‑lists  (HashMap<String, Vec<[u8;20]>>)
+// ------------------------------------------------
+// Any failure to meet policy results in `assert!` which aborts the
+// circuit.  On success, we commit the following hashes so the wrapper
+// can pin the exact inputs used for verification:
+//   • call‑hash      – keccak256(calldata)
+//   • policy‑hash    – keccak256(serialised Policy)
+//   • groups‑hash    – keccak256(serialised Groups)
+//   • allow‑hash     – keccak256(serialised Allow‑lists)
 entry!(main);
 
 fn main() {
-    // 1) read raw bytes that the host wrote
-    println!("Reading frame...");
+    // 1. read the frame sent by the host ------------------------
     let bytes: Vec<u8> = env::read_frame();
-    println!("Read {} bytes", bytes.len());
 
-    // 2) deserialize with the same codec the host used
-    println!("Deserializing...");
-    let auth_request: AuthRequest = bincode::DefaultOptions::new()
+    // 2. deserialize it (bincode, fixint) -----------------------
+    let user_action: UserAction = bincode::DefaultOptions::new()
         .with_fixint_encoding()
         .deserialize(&bytes)
-        .unwrap();
-    println!("Deserialized {:?}", auth_request);
+        .expect("deserialize ProofInput");
 
-    // 3) run policy checks
-    println!("Running policy checks...");
-    let target = if let Some(target) = auth_request.target() {
-        target
-    } else {
-        println!("No target address found");
-        panic!("No target address found");
-    };
+    // 3. policy ------------------------------------------------------------
+    let policy_raw_bytes: Vec<u8> = env::read_frame();
+    let raw_policy: Policy = bincode::DefaultOptions::new()
+        .with_fixint_encoding()
+        .deserialize(&policy_raw_bytes)
+        .expect("deserialize Policy");
+    let (policy, policy_bytes) = canonicalise_policy(raw_policy);
 
-    let allowed = run_policy_checks(
-        target,
-        &auth_request,
-    );
+    // 4. groups ------------------------------------------------------------
+    let groups_raw_bytes: Vec<u8> = env::read_frame();
+    let raw_groups: HashMap<String, Vec<[u8; 20]>> = bincode::DefaultOptions::new()
+        .with_fixint_encoding()
+        .deserialize(&groups_raw_bytes)
+        .expect("deserialize Groups");
+    let (groups_canon, groups_bytes) = canonicalise_lists(raw_groups);
+    let groups_sets: HashMap<String, HashSet<[u8; 20]>> = groups_canon
+        .iter()
+        .map(|(k, v)| (k.clone(), v.iter().copied().collect()))
+        .collect();
+
+    // 5. allow‑lists -------------------------------------------------------
+    let allow_raw_bytes: Vec<u8> = env::read_frame();
+    let raw_allow: HashMap<String, Vec<[u8; 20]>> = bincode::DefaultOptions::new()
+        .with_fixint_encoding()
+        .deserialize(&allow_raw_bytes)
+        .expect("deserialize Allow-lists");
+    let (allow_canon, allow_bytes) = canonicalise_lists(raw_allow);
+    let allow_sets: HashMap<String, HashSet<[u8; 20]>> = allow_canon
+        .iter()
+        .map(|(k, v)| (k.clone(), v.iter().copied().collect()))
+        .collect();
+
+    // 6. evaluate policy ----------------------------------------
+    let allowed = run_policy_checks(&policy, &groups_sets, &allow_sets, &user_action);
     assert!(allowed, "policy-violation");
-    println!("Policy checks passed!");
 
-    // 4) commit the result to the journal
-    println!("Committing...");
-    let mut bytes = Vec::new();
-    if let Some(data) = auth_request.data() {
-        bytes.extend(data);
-    }
-    let commit = keccak256(&bytes);
-    println!("Commit: {:?}", hex::encode(commit));
-    env::commit(&commit);
-    println!("Commit done!");
-}
+    // 7. commitments
+    let call_hash = keccak256(&user_action.data);
+    let policy_hash = keccak256(&policy_bytes);
+    let groups_hash = keccak256(&groups_bytes);
+    let allow_hash = keccak256(&allow_bytes);
 
-fn run_policy_checks(target: &[u8; 20], auth_request: &AuthRequest) -> bool {
-    // 1) extract raw calldata for policy checks
-    println!("Extracting calldata...");
-    let calldata: Vec<u8> = match auth_request {
-        AuthRequest::Transaction { data, .. } => data.clone(),
-        AuthRequest::UserOperation { call_data, .. } => call_data.clone(),
-    };
-    println!("Extracted {} bytes of calldata", calldata.len());
-
-    // 2) decode calldata
-    println!("Decoding calldata...");
-    let action = match parse_action(target, &calldata) {
-        Some(a) => a,
-        None    => { panic!("Failed to decode action") }
-    };
-    println!("Decoded action: {:?}", action);
-
-    // 3) apply policy
-    println!("Applying policy...");
-    let allowed = match action {
-        Action::Transfer { erc20_address, amount, .. } => {
-            println!("Hex erc20 address: {:?}", hex::encode(erc20_address));
-
-            if let Some(erc20_address) = MAX_PER_TX_MAP.get(&erc20_address) {
-                println!("ERC20 address: {:?}", erc20_address);
-            } else {
-                println!("Unknown ERC20 address");
-                return false;
-            }
-            println!("Amount: {:?}", amount);
-            println!("Max per tx: {:?}", MAX_PER_TX_MAP.get(&erc20_address));
-
-            if amount > *MAX_PER_TX_MAP.get(&erc20_address).unwrap() {
-                false
-            } else {
-                true
-            }
-        }
-    };
-    println!("Policy result: {}", allowed);
-    allowed
+    let hashes = vec![call_hash, policy_hash, groups_hash, allow_hash];
+    env::commit(&hashes);
 }
