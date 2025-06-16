@@ -133,8 +133,9 @@ pub const ETH_ASSET: [u8; 20] = [0u8; 20];
 /// executed on‑chain
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UserAction {
-    pub to: [u8; 20],     // target contract or direct recipient
-    pub value: u128,      // native token amount (wei)
-    pub data: Vec<u8>,    // calldata (empty for plain ETH transfers)
-    pub signer: [u8; 20], // recovered signer address
+    pub to: [u8; 20],       // target contract or direct recipient
+    pub value: u128,        // native token amount (wei)
+    pub data: Vec<u8>,      // calldata (empty for plain ETH transfers)
+    pub signer: [u8; 20],   // recovered signer address
+    pub signature: Vec<u8>, // signature of the action
 }

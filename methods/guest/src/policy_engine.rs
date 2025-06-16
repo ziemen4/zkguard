@@ -5,57 +5,21 @@
 
 extern crate alloc;
 
-use alloc::{collections::BTreeMap, string::String, vec::Vec};
-use bincode::Options;
+use alloc::string::String;
+use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
 use risc0_zkvm::guest::abort;
+use sha3::{Digest, Keccak256};
 use std::collections::{HashMap, HashSet};
 use zkguard_core::{
     ActionType, AssetPattern, DestinationPattern, Policy, SignerPattern, TxType, UserAction,
     ETH_ASSET,
 };
-
 /*───────────────────────────────────────────────────────────────────────────*
- *  Helper utilities                                                         *
+ * Helper utilities                                                         *
  *───────────────────────────────────────────────────────────────────────────*/
 
 /// ERC‑20 `transfer(address,uint256)` function selector (big‑endian).
 const TRANSFER_SELECTOR: [u8; 4] = [0xa9, 0x05, 0x9c, 0xbb];
-
-// -------------------------------------------------------------------------
-// helper: canonicalise a map of address-lists into a deterministic form
-// -------------------------------------------------------------------------
-pub fn canonicalise_lists(
-    raw: HashMap<String, Vec<[u8; 20]>>,
-) -> (BTreeMap<String, Vec<[u8; 20]>>, Vec<u8>) {
-    let mut canon = BTreeMap::<String, Vec<[u8; 20]>>::new();
-    for (k, mut v) in raw {
-        v.sort();
-        v.dedup();
-        canon.insert(k, v);
-    }
-    let bytes = bincode::DefaultOptions::new()
-        .with_fixint_encoding()
-        .serialize(&canon)
-        .expect("serialise canonical lists");
-    (canon, bytes)
-}
-
-// -------------------------------------------------------------------------
-// helper: canonicalise the policy (sort by id, reject duplicates)
-// -------------------------------------------------------------------------
-pub fn canonicalise_policy(mut raw: Policy) -> (Policy, Vec<u8>) {
-    raw.sort_by_key(|r| r.id);
-    for win in raw.windows(2) {
-        if win[0].id == win[1].id {
-            abort("duplicate policy id");
-        }
-    }
-    let bytes = bincode::DefaultOptions::new()
-        .with_fixint_encoding()
-        .serialize(&raw)
-        .expect("serialise canonical policy");
-    (raw, bytes)
-}
 
 /// Returns `true` if the calldata encodes an ERC‑20 `transfer`.
 fn is_erc20_transfer(data: &[u8]) -> bool {
@@ -97,6 +61,14 @@ fn match_destination(
     }
 }
 
+fn hash_user_action(user_action: &UserAction) -> [u8; 32] {
+    let mut h = Keccak256::new();
+    h.update(&user_action.to);
+    h.update(&user_action.value.to_be_bytes());
+    h.update(&user_action.data);
+    h.finalize().into()
+}
+
 /// Evaluate the signer against the signer pattern.
 fn match_signer(
     pattern: &SignerPattern,
@@ -107,6 +79,44 @@ fn match_signer(
         SignerPattern::Any => true,
         SignerPattern::Exact(addr) => addr == signer,
         SignerPattern::Group(name) => groups.get(name).map_or(false, |set| set.contains(signer)),
+    }
+}
+
+/// Verify that `ua.signature` is a *65-byte* (r‖s‖v) Ethereum-style sig and
+/// that it was produced by `signer`.
+fn match_signature(signer: &[u8; 20], ua: &UserAction) -> Result<(), &'static str> {
+    /* 1. split r|s|v -----------------------------------------------------*/
+    if ua.signature.len() != 65 {
+        return Err("bad sig len");
+    }
+    let (rs, v) = ua.signature.split_at(64);
+
+    let sig = Signature::try_from(rs).map_err(|_| "sig parse")?;
+    let rec = RecoveryId::try_from(v[0]).map_err(|_| "rec id")?;
+
+    /* 2. compute digest --------------------------------------------------*/
+    // We sign the *pre-hashed* 32-byte canonical representation
+    let digest = hash_user_action(ua);
+
+    /* 3. recover pubkey --------------------------------------------------*/
+    let vk = VerifyingKey::recover_from_prehash(
+        &digest, // Pass the pre-computed hash
+        &sig, rec,
+    )
+    .map_err(|_| "recover")?;
+
+    /* 4. derive address --------------------------------------------------*/
+    let pk = vk.to_encoded_point(false); // 04 || X || Y
+    let mut h = Keccak256::new();
+    h.update(&pk.as_bytes()[1..]); // drop 0x04
+    let out = h.finalize();
+    let mut addr = [0u8; 20];
+    addr.copy_from_slice(&out[12..]);
+
+    if &addr == signer {
+        Ok(())
+    } else {
+        Err("signer mismatch")
     }
 }
 
@@ -137,7 +147,7 @@ fn classify_user_action(user_action: &UserAction) -> (TxType, [u8; 20], [u8; 20]
 }
 
 /*───────────────────────────────────────────────────────────────────────────*
- *  The Policy Engine                                                        *
+ * The Policy Engine                                                        *
  *───────────────────────────────────────────────────────────────────────────*/
 
 /// Evaluates a `UserAction` against the ordered `policy`.  Returns `true` if
@@ -149,12 +159,12 @@ pub fn run_policy_checks(
     user_action: &UserAction,
 ) -> bool {
     /*───────────────────────────────────────────────────────────────────────*
-     *  1. Classify the user action                                         *
+     * 1. Classify the user action                                         *
      *───────────────────────────────────────────────────────────────────────*/
     let (tx_type, dest_addr, asset_addr) = classify_user_action(user_action);
 
     /*───────────────────────────────────────────────────────────────────────*
-     *  2. Iterate policy lines (top‑down)                                  *
+     * 2. Iterate policy lines (top‑down)                                  *
      *───────────────────────────────────────────────────────────────────────*/
     // Verify that policy is ordered by `id` and has no duplicates
     if !policy.is_empty() {
@@ -185,21 +195,22 @@ pub fn run_policy_checks(
             continue;
         }
 
-        // (d) Asset pattern must match
-        match &rule.asset {
-            AssetPattern::Any => {}
-            AssetPattern::Exact(addr) if addr == &asset_addr => {}
-            _ => continue,
+        // (d) Match the signature with the signer
+        match_signature(&user_action.signer, &user_action).expect("signature verification failed");
+
+        // (e) Asset pattern must match
+        if !match_asset(&rule.asset, &asset_addr) {
+            continue;
         }
 
-        // (e) Contract calls must NOT specify an explicit asset
+        // (f) Contract calls must NOT specify an explicit asset
         if tx_type == TxType::ContractCall && !matches!(rule.asset, AssetPattern::Any) {
             continue;
         }
 
-        // (f) Minimum threshold – not yet implemented (future work)
+        // (g) Minimum threshold – not yet implemented (future work)
 
-        // (g) Take the rule's action
+        // (h) Take the rule's action
         return matches!(rule.action, ActionType::Allow);
     }
 
