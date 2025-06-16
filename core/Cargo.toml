@@ -10,4 +10,4 @@ crate-type = ["rlib"]     # ordinary Rust library
 [dependencies]
 serde        = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
 tiny-keccak = { version = "2.0.2", features = ["keccak"] }
-risc0-zkvm = { version = "2.0.2", default-features = false, features = ["std", "unstable"] }
+risc0-zkvm = { version = "2.1", default-features = false, features = ["std", "unstable"] }
