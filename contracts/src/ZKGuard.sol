@@ -1,61 +1,81 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.21;
 
-interface IRisc0Verifier {
-    /// @notice returns true if proof is valid and the single public output
-    ///         (commitment) equals the supplied `expectedCommit`
-    function verify(
-        bytes calldata proof,
-        bytes32 expectedCommit
-    ) external view returns (bool);
+import {IRiscZeroVerifier} from "../lib/risc0-ethereum/contracts/src/IRiscZeroVerifier.sol";
+
+/// @notice Interface for the ImageID contract.
+interface IImageID {
+    function ZKPOEX_GUEST_ID() external view returns (bytes32);
 }
 
 contract ZKGuardWrapper {
-    IRisc0Verifier public immutable verifier;
+    /// @notice Image ID of the only zkVM binary to accept verification from.
+    bytes32 public imageId;
+
+    IRiscZeroVerifier public immutable verifier;
 
     /// simple replay-protection
     mapping(address => mapping(uint64 => bool)) public used;
 
-    constructor(address _verifier) {
-        verifier = IRisc0Verifier(_verifier);
+    bytes32 public policy_hash;
+    bytes32 public groups_hash;
+    bytes32 public allow_hash;
+
+    constructor(
+        address _verifier,
+        bytes32 _policy_hash,
+        bytes32 _groups_hash,
+        bytes32 _allow_hash
+    ) {
+        verifier = IRiscZeroVerifier(_verifier);
+        policy_hash = _policy_hash;
+        groups_hash = _groups_hash;
+        allow_hash = _allow_hash;
     }
 
     /// @notice Verify proof & forward arbitrary call
     /// @dev    packet = abi.encode(target,value,data,commitment,nonce,proof)
-    function verifyAndForward(bytes calldata packet) external payable {
+    function verifyAndForward(
+        bytes calldata userAction,
+        bytes calldata seal,
+        bytes calldata journal // What the user wants to delegate to the target
+    ) public payable {
+        // Verify if ZK proof is valid
+        verifier.verify(seal, imageId, sha256(journal));
+
+        // Get public values from the journal
         (
-            address target,
-            uint256 value,
-            bytes calldata innerData,
-            bytes32 commitment,
-            uint64 nonce,
-            bytes calldata proof
-        ) = abi.decode(
-                packet,
-                (address, uint256, bytes, bytes32, uint64, bytes)
-            );
+            bytes32 claimed_action_hash,
+            bytes32 claimed_policy_hash,
+            bytes32 claimed_groups_hash,
+            bytes32 claimed_allow_hash
+        ) = abi.decode(journal, (bytes32, bytes32, bytes32, bytes32));
 
-        // 1. prevent replay for (sender,nonce)
-        require(!used[msg.sender][nonce], "nonce-used");
-        used[msg.sender][nonce] = true;
-
-        // 2. ETH invariance
-        require(value == msg.value, "value-mismatch");
-
-        // 3. re-compute commitment on-chain for integrity
-        bytes32 local = keccak256(
-            abi.encodePacked(msg.sender, target, value, innerData, nonce)
+        // Verify that userAction (the action to be performed) matches the claimed action hash
+        require(
+            claimed_action_hash == keccak256(userAction),
+            "action-hash-mismatch"
         );
-        require(local == commitment, "bad-commitment");
 
-        // 4. verify zero-knowledge proof (costs ~60k–150k gas for Groth16)
-        require(verifier.verify(proof, commitment), "invalid-proof");
+        // Verify that the claimed policy, groups, and allow hashes match the contract's state
+        require(claimed_policy_hash == policy_hash, "policy-hash-mismatch");
+        require(claimed_groups_hash == groups_hash, "groups-hash-mismatch");
+        require(claimed_allow_hash == allow_hash, "allow-hash-mismatch");
 
-        // 5. forward the original intent
-        (bool ok, bytes memory ret) = target.call{value: value}(innerData);
+        // Decode the user action
+        (
+            address to,
+            uint256 value,
+            bytes memory data,
+            address signer,
+            bytes memory signature
+        ) = abi.decode(userAction, (address, uint256, bytes, address, bytes));
+
+        // Forward the original user action to the target
+        (bool ok, bytes memory ret) = to.call{value: value}(data);
         require(ok, "target-call-failed");
 
-        // 6. bubble return data (or emit event if you prefer)
+        // Bubble return data
         assembly {
             return(add(ret, 32), mload(ret))
         }
