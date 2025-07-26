@@ -1215,6 +1215,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rs_merkle"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bb09b49230ba22e8c676e7b75dfe2887dea8121f18b530ae0ba519ce442d2b21"
+dependencies = [
+ "sha2",
+]
+
+[[package]]
 name = "ryu"
 version = "1.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1563,7 +1572,10 @@ dependencies = [
 name = "zkguard_core"
 version = "0.1.0"
 dependencies = [
+ "bincode",
  "risc0-zkvm",
+ "rs_merkle",
  "serde",
+ "sha3",
  "tiny-keccak",
 ]

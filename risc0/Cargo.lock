@@ -4462,8 +4462,11 @@ dependencies = [
 name = "zkguard_core"
 version = "0.1.0"
 dependencies = [
+ "bincode",
  "risc0-zkvm",
+ "rs_merkle",
  "serde",
+ "sha3",
  "tiny-keccak",
 ]
 

@@ -4,11 +4,12 @@ use dotenv::dotenv;
 use k256::ecdsa::SigningKey;
 use k256::elliptic_curve::rand_core::OsRng;
 use risc0_zkvm::{default_prover, ExecutorEnv};
-use rs_merkle::{algorithms::Sha256 as MerkleSha256, MerkleTree};
+use rs_merkle::MerkleTree;
 use sha3::{Digest, Keccak256};
 use std::collections::HashMap;
 use zkguard_core::{
-    AssetPattern, DestinationPattern, MerklePath, PolicyLine, SignerPattern, TxType, UserAction,
+    hash_policy_line_for_merkle_tree, AssetPattern, DestinationPattern, Keccak256MerkleHasher,
+    MerklePath, PolicyLine, SignerPattern, TxType, UserAction,
 };
 use zkguard_methods::{ZKGUARD_POLICY_ELF, ZKGUARD_POLICY_ID};
 
@@ -26,41 +27,6 @@ fn hash_user_action(ua: &UserAction) -> [u8; 32] {
     h.update(&ua.to);
     h.update(&ua.value.to_be_bytes());
     h.update(&ua.data);
-    h.finalize().into()
-}
-
-// Leaf‑hash = Keccak256(bincode(PolicyLine))
-fn hash_policy_line(pl: &PolicyLine) -> [u8; 32] {
-    let mut h = Keccak256::new();
-    h.update(pl.id.to_be_bytes());
-    // For TxType, DestinationPattern, SignerPattern, and AssetPattern,
-    // we need to encode them to bytes for hashing.
-    // Assuming they have a consistent bincode encoding.
-    h.update(
-        bincode::DefaultOptions::new()
-            .with_fixint_encoding()
-            .serialize(&pl.tx_type)
-            .unwrap(),
-    );
-    h.update(
-        bincode::DefaultOptions::new()
-            .with_fixint_encoding()
-            .serialize(&pl.destination)
-            .unwrap(),
-    );
-    h.update(
-        bincode::DefaultOptions::new()
-            .with_fixint_encoding()
-            .serialize(&pl.signer)
-            .unwrap(),
-    );
-    h.update(
-        bincode::DefaultOptions::new()
-            .with_fixint_encoding()
-            .serialize(&pl.asset)
-            .unwrap(),
-    );
-    // Removed pl.minimum as it's not a field in PolicyLine
     h.finalize().into()
 }
 
@@ -138,8 +104,11 @@ fn main() -> Result<()> {
         asset: AssetPattern::Exact(usdc_addr), // only USDC
     };
 
-    let hashed_leaves = vec![hash_policy_line(&rule_0), hash_policy_line(&rule_1)]; // Changed leaf1 to rule_1
-    let tree: MerkleTree<MerkleSha256> = MerkleTree::from_leaves(&hashed_leaves);
+    let hashed_leaves = vec![
+        hash_policy_line_for_merkle_tree(&rule_0),
+        hash_policy_line_for_merkle_tree(&rule_1),
+    ];
+    let tree: MerkleTree<Keccak256MerkleHasher> = MerkleTree::from_leaves(&hashed_leaves);
     let root = tree.root();
     let proof = tree.proof(&[0]);
     let path_hashes: Vec<[u8; 32]> = proof.proof_hashes().to_vec();
@@ -149,7 +118,6 @@ fn main() -> Result<()> {
         siblings: path_hashes.clone(), // Changed `path` to `siblings`
     };
     let merkle_root: [u8; 32] = root.expect("Merkle tree should have a root");
-    let merkle_root_vec: Vec<u8> = merkle_root.to_vec();
     // Empty maps (we're not using groups / allow-lists for this rule)
     let groups: HashMap<String, Vec<[u8; 20]>> = HashMap::new();
     let allows: HashMap<String, Vec<[u8; 20]>> = HashMap::new();
@@ -157,7 +125,7 @@ fn main() -> Result<()> {
     // ---------------------------------------------------------------------
     // Encode frames (bincode + fixint)
     // ---------------------------------------------------------------------
-    let root_bytes = encode(&merkle_root_vec);
+    let root_bytes = encode(&merkle_root.to_vec());
     let user_action_bytes = encode(&user_action);
     let leaf_bytes = encode(&rule_0);
     let path_bytes = encode(&merkle_path);

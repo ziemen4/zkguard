@@ -43,26 +43,69 @@ fn canonicalise_lists(
 ///
 /// # Returns
 /// `true` if the computed root matches the expected root, `false` otherwise.
-fn verify_merkle_proof(root: &[u8; 32], leaf_bytes: &[u8], proof: &MerklePath) -> bool {
+fn verify_merkle_proof(root: &[u8], leaf_bytes: &[u8], proof: &MerklePath) -> bool {
+    env::log(&format!("verify_merkle_proof: Expected root: {:?}", root));
+    env::log(&format!(
+        "verify_merkle_proof: Leaf bytes length: {}",
+        leaf_bytes.len()
+    ));
+    // Depending on how large leaf_bytes can be, consider logging only a prefix or hash of it
+    // env::log(&format!("verify_merkle_proof: Leaf bytes (first 32): {:?}", &leaf_bytes[..32]));
+
+    env::log(&format!(
+        "verify_merkle_proof: Leaf index: {}",
+        proof.leaf_index
+    ));
+    env::log(&format!(
+        "verify_merkle_proof: Number of siblings: {}",
+        proof.siblings.len()
+    ));
+
     let mut computed_hash = keccak256(leaf_bytes);
+    env::log(&format!(
+        "verify_merkle_proof: Initial computed hash: {:?}",
+        computed_hash
+    ));
+
     let mut current_index = proof.leaf_index;
 
-    for sibling_hash in &proof.siblings {
+    for (i, sibling_hash) in proof.siblings.iter().enumerate() {
+        env::log(&format!(
+            "verify_merkle_proof: Step {}, current_index: {}, sibling: {:?}",
+            i, current_index, sibling_hash
+        ));
+
         let mut combined = Vec::with_capacity(64);
         if current_index % 2 == 0 {
             // Current node is a left child, sibling is on the right
             combined.extend_from_slice(&computed_hash);
             combined.extend_from_slice(sibling_hash);
+            env::log("verify_merkle_proof: Left child + Right sibling");
         } else {
             // Current node is a right child, sibling is on the left
             combined.extend_from_slice(sibling_hash);
             combined.extend_from_slice(&computed_hash);
+            env::log("verify_merkle_proof: Left sibling + Right child");
         }
         computed_hash = keccak256(&combined);
+        env::log(&format!(
+            "verify_merkle_proof: Computed hash after step {}: {:?}",
+            i, computed_hash
+        ));
+
         current_index /= 2; // Move up to the parent level
     }
 
-    computed_hash == *root
+    let result = computed_hash == *root;
+    env::log(&format!(
+        "verify_merkle_proof: Final computed hash: {:?}",
+        computed_hash
+    ));
+    env::log(&format!(
+        "verify_merkle_proof: Merkle proof result: {}",
+        result
+    ));
+    result
 }
 
 // ================================================================
@@ -90,15 +133,15 @@ fn main() {
     // 0. Merkle‑root (32 bytes)
     // ──────────────────────────────────────────────────────────────────────
     env::log("[ZKGuard] Reading Merkle root from the prover environment...");
-    let root_bytes: Vec<u8> = env::read_frame();
+    let bytes_policy_merkle_root: Vec<u8> = env::read_frame();
     env::log(&format!(
         "[ZKGuard] Policy Merkle root length in bytes: {:?}",
-        root_bytes.len()
+        bytes_policy_merkle_root.len()
     ));
-    let policy_merkle_root: [u8; 32] = root_bytes
-        .clone()
-        .try_into()
-        .expect("expected 32 bytes for Merkle root");
+    let policy_merkle_root: Vec<u8> = bincode::DefaultOptions::new()
+        .with_fixint_encoding()
+        .deserialize(&bytes_policy_merkle_root) // Deserialize the 40 bytes into a [u8; 32]
+        .expect("deserialize Merkle root");
     env::log(&format!(
         "[ZKGuard] Policy Merkle root: {:?}",
         policy_merkle_root
@@ -107,11 +150,14 @@ fn main() {
     // ──────────────────────────────────────────────────────────────────────
     // 1. UserAction
     // ──────────────────────────────────────────────────────────────────────
-    let bytes: Vec<u8> = env::read_frame();
-    println!("[ZKGuard] User action length in bytes: {:?}", bytes.len());
+    let bytes_user_action: Vec<u8> = env::read_frame();
+    println!(
+        "[ZKGuard] User action length in bytes: {:?}",
+        bytes_user_action.len()
+    );
     let user_action: UserAction = bincode::DefaultOptions::new()
         .with_fixint_encoding()
-        .deserialize(&bytes)
+        .deserialize(&bytes_user_action)
         .expect("deserialize UserAction");
     println!("[ZKGuard] User action: {:?}", user_action);
     // ──────────────────────────────────────────────────────────────────────
@@ -130,28 +176,28 @@ fn main() {
     // ──────────────────────────────────────────────────────────────────────
     // 3. Merkle path
     // ──────────────────────────────────────────────────────────────────────
-    let path_bytes: Vec<u8> = env::read_frame();
+    let bytes_policy_merkle_path: Vec<u8> = env::read_frame();
     println!(
         "[ZKGuard] Merkle path length in bytes: {:?}",
-        path_bytes.len()
+        bytes_policy_merkle_path.len()
     );
-    let policy_merkle_proof = bincode::DefaultOptions::new()
+    let policy_merkle_path = bincode::DefaultOptions::new()
         .with_fixint_encoding()
-        .deserialize::<MerklePath>(&path_bytes)
+        .deserialize::<MerklePath>(&bytes_policy_merkle_path)
         .expect("deserialize MerklePath");
-    println!("[ZKGuard] Merkle path: {:?}", policy_merkle_proof);
+    println!("[ZKGuard] Merkle path: {:?}", policy_merkle_path);
 
     // ──────────────────────────────────────────────────────────────────────
     // 4. Groups
     // ──────────────────────────────────────────────────────────────────────
-    let groups_raw_bytes: Vec<u8> = env::read_frame();
+    let bytes_raw_groups: Vec<u8> = env::read_frame();
     println!(
         "[ZKGuard] Groups length in bytes: {:?}",
-        groups_raw_bytes.len()
+        bytes_raw_groups.len()
     );
     let raw_groups: HashMap<String, Vec<[u8; 20]>> = bincode::DefaultOptions::new()
         .with_fixint_encoding()
-        .deserialize(&groups_raw_bytes)
+        .deserialize(&bytes_raw_groups)
         .expect("deserialize Groups");
     let (groups_canon, groups_bytes) = canonicalise_lists(raw_groups);
     let groups_sets: HashMap<String, HashSet<[u8; 20]>> = groups_canon
@@ -163,16 +209,16 @@ fn main() {
     // ──────────────────────────────────────────────────────────────────────
     // 5. Allow‑lists
     // ──────────────────────────────────────────────────────────────────────
-    let allow_raw_bytes: Vec<u8> = env::read_frame();
+    let bytes_raw_allowed: Vec<u8> = env::read_frame();
     println!(
         "[ZKGuard] Allow-lists length in bytes: {:?}",
-        allow_raw_bytes.len()
+        bytes_raw_allowed.len()
     );
-    let raw_allow: HashMap<String, Vec<[u8; 20]>> = bincode::DefaultOptions::new()
+    let raw_allowed: HashMap<String, Vec<[u8; 20]>> = bincode::DefaultOptions::new()
         .with_fixint_encoding()
-        .deserialize(&allow_raw_bytes)
+        .deserialize(&bytes_raw_allowed)
         .expect("deserialize Allow-lists");
-    let (allow_canon, allow_bytes) = canonicalise_lists(raw_allow);
+    let (allow_canon, allow_bytes) = canonicalise_lists(raw_allowed);
     let allow_sets: HashMap<String, HashSet<[u8; 20]>> = allow_canon
         .iter()
         .map(|(k, v)| (k.clone(), v.iter().copied().collect()))
@@ -182,11 +228,8 @@ fn main() {
     // ──────────────────────────────────────────────────────────────────────
     // 6. Verify the Merkle proof for the policy line
     // ──────────────────────────────────────────────────────────────────────
-    let proof_is_valid = verify_merkle_proof(
-        &policy_merkle_root,
-        &bytes_policy_line,
-        &policy_merkle_proof,
-    );
+    let proof_is_valid =
+        verify_merkle_proof(&policy_merkle_root, &bytes_policy_line, &policy_merkle_path);
     assert!(proof_is_valid, "merkle-proof-invalid");
 
     // ──────────────────────────────────────────────────────────────────────
@@ -199,7 +242,7 @@ fn main() {
     // 8. Commit the hashes of the inputs used for verification
     // ──────────────────────────────────────────────────────────────────────
     let call_hash = keccak256(&user_action.data);
-    let root = root_bytes
+    let root: [u8; 32] = policy_merkle_root
         .try_into()
         .expect("expected 32 bytes for Merkle root");
     let groups_hash = keccak256(&groups_bytes);
