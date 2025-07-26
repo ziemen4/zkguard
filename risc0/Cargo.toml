@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+rs_merkle   = { version = "1.5.0", default-features = false }
 clap = { version = "4.0", features = ["derive"] }
 zkguard-methods = { path = "methods" }
 risc0-zkvm = { version = "2.1", default-features = false, features = ["std", "unstable", "client"] }

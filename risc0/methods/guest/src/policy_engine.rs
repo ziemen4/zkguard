@@ -1,7 +1,7 @@
-// SPDX‑License‑Identifier: Apache‑2.0
-// A minimal policy engine that evaluates on‑chain user actions against a
-// configurable line‑by‑line policy.  The implementation follows the design
-// brief dated 2025‑06‑14.
+// SPDX-License-Identifier: Apache-2.0
+// A minimal policy engine that evaluates on-chain user actions against a
+// single, pre-verified policy line. The implementation follows the
+// design brief dated 2025-06-14 and was updated for the ZKGuard architecture.
 
 extern crate alloc;
 
@@ -11,34 +11,34 @@ use risc0_zkvm::guest::abort;
 use sha3::{Digest, Keccak256};
 use std::collections::{HashMap, HashSet};
 use zkguard_core::{
-    ActionType, AssetPattern, DestinationPattern, Policy, SignerPattern, TxType, UserAction,
-    ETH_ASSET,
+    AssetPattern, DestinationPattern, PolicyLine, SignerPattern, TxType, UserAction, ETH_ASSET,
 };
+
 /*───────────────────────────────────────────────────────────────────────────*
- * Helper utilities                                                         *
+ * Helper utilities (unchanged)                                             *
  *───────────────────────────────────────────────────────────────────────────*/
 
-/// ERC‑20 `transfer(address,uint256)` function selector (big‑endian).
+/// ERC-20 `transfer(address,uint256)` function selector (big-endian).
 const TRANSFER_SELECTOR: [u8; 4] = [0xa9, 0x05, 0x9c, 0xbb];
 
-/// Returns `true` if the calldata encodes an ERC‑20 `transfer`.
+/// Returns `true` if the calldata encodes an ERC-20 `transfer`.
 fn is_erc20_transfer(data: &[u8]) -> bool {
     data.len() >= 4 && data[..4] == TRANSFER_SELECTOR
 }
 
-/// Attempts to parse an ERC‑20 `transfer` call.
+/// Attempts to parse an ERC-20 `transfer` call.
 /// Returns `(to, amount)` on success.
 fn parse_erc20_transfer(data: &[u8]) -> Option<([u8; 20], u128)> {
     if !is_erc20_transfer(data) || data.len() < 4 + 32 + 32 {
         return None;
     }
 
-    // `to` is stored right‑padded in the first parameter slot
+    // `to` is stored right-padded in the first parameter slot
     let mut to = [0u8; 20];
     to.copy_from_slice(&data[4 + 12..4 + 32]);
 
-    // `amount` is stored as a 256‑bit big‑endian integer in the 2nd slot
-    let mut amt_bytes = [0u8; 16]; // lowest 128‑bit slice (suffices for most tokens)
+    // `amount` is stored as a 256-bit big-endian integer in the 2nd slot
+    let mut amt_bytes = [0u8; 16]; // lowest 128-bit slice (suffices for most tokens)
     amt_bytes.copy_from_slice(&data[4 + 32 + 16..4 + 64]);
     let amount = u128::from_be_bytes(amt_bytes);
 
@@ -83,27 +83,28 @@ fn match_signer(
 }
 
 /// Verify that `ua.signature` is a *65-byte* (r‖s‖v) Ethereum-style sig and
-/// that it was produced by `signer`.
-fn match_signature(signer: &[u8; 20], ua: &UserAction) -> Result<(), &'static str> {
+/// that it was produced by `signer`. Aborts the proof on failure.
+fn verify_signature(signer: &[u8; 20], ua: &UserAction) {
     /* 1. split r|s|v -----------------------------------------------------*/
     if ua.signature.len() != 65 {
-        return Err("bad sig len");
+        abort("bad sig len");
     }
     let (rs, v) = ua.signature.split_at(64);
 
-    let sig = Signature::try_from(rs).map_err(|_| "sig parse")?;
-    let rec = RecoveryId::try_from(v[0]).map_err(|_| "rec id")?;
+    let Ok(sig) = Signature::try_from(rs) else {
+        abort("sig parse")
+    };
+    let Ok(rec) = RecoveryId::try_from(v[0]) else {
+        abort("rec id")
+    };
 
     /* 2. compute digest --------------------------------------------------*/
-    // We sign the *pre-hashed* 32-byte canonical representation
     let digest = hash_user_action(ua);
 
     /* 3. recover pubkey --------------------------------------------------*/
-    let vk = VerifyingKey::recover_from_prehash(
-        &digest, // Pass the pre-computed hash
-        &sig, rec,
-    )
-    .map_err(|_| "recover")?;
+    let Ok(vk) = VerifyingKey::recover_from_prehash(&digest, &sig, rec) else {
+        abort("recover failed")
+    };
 
     /* 4. derive address --------------------------------------------------*/
     let pk = vk.to_encoded_point(false); // 04 || X || Y
@@ -113,10 +114,8 @@ fn match_signature(signer: &[u8; 20], ua: &UserAction) -> Result<(), &'static st
     let mut addr = [0u8; 20];
     addr.copy_from_slice(&out[12..]);
 
-    if &addr == signer {
-        Ok(())
-    } else {
-        Err("signer mismatch")
+    if &addr != signer {
+        abort("signer mismatch")
     }
 }
 
@@ -134,7 +133,7 @@ fn classify_user_action(user_action: &UserAction) -> (TxType, [u8; 20], [u8; 20]
             // Native ETH transfer (`CALL` with value, empty calldata)
             (TxType::Transfer, user_action.to, ETH_ASSET)
         } else {
-            // ERC‑20 token transfer via `transfer(address,uint256)`
+            // ERC-20 token transfer via `transfer(address,uint256)`
             match parse_erc20_transfer(&user_action.data) {
                 Some((to, _amount)) => (TxType::Transfer, to, user_action.to), // `user_action.to` = token contract
                 None => abort("malformed ERC-20 transfer data"),
@@ -147,72 +146,55 @@ fn classify_user_action(user_action: &UserAction) -> (TxType, [u8; 20], [u8; 20]
 }
 
 /*───────────────────────────────────────────────────────────────────────────*
- * The Policy Engine                                                        *
+ * The Policy Engine (Refactored)                                           *
  *───────────────────────────────────────────────────────────────────────────*/
 
-/// Evaluates a `UserAction` against the ordered `policy`.  Returns `true` if
-/// the action is *allowed* and `false` otherwise.
+/// Evaluates a `UserAction` against a single `PolicyLine`. Returns `true` if
+/// the action is fully compliant with the rule.
+///
+/// This function is the core of the ZK-proof. It confirms that the user's
+/// action precisely matches the single "allow" rule provided by the host.
 pub fn run_policy_checks(
-    policy: &Policy,
+    rule: &PolicyLine,
     groups: &HashMap<String, HashSet<[u8; 20]>>,
     allowlists: &HashMap<String, HashSet<[u8; 20]>>,
     user_action: &UserAction,
 ) -> bool {
-    /*───────────────────────────────────────────────────────────────────────*
-     * 1. Classify the user action                                         *
-     *───────────────────────────────────────────────────────────────────────*/
+    // 1. Classify the user action to determine its type, destination, and asset.
     let (tx_type, dest_addr, asset_addr) = classify_user_action(user_action);
 
-    /*───────────────────────────────────────────────────────────────────────*
-     * 2. Iterate policy lines (top‑down)                                  *
-     *───────────────────────────────────────────────────────────────────────*/
-    // Verify that policy is ordered by `id` and has no duplicates
-    if !policy.is_empty() {
-        let mut prev_id = policy[0].id;
-        // start at 1 because we already recorded element 0
-        for line in &policy[1..] {
-            if line.id <= prev_id {
-                // Mis-ordered or duplicate ID ⇒ implicit block
-                return false;
-            }
-            prev_id = line.id;
-        }
+    // 2. The host claims this `rule` allows the `user_action`. We now verify this claim.
+    // Each check must pass for the action to be considered valid under this rule.
+
+    // (a) Tx-type must match the rule.
+    if rule.tx_type != tx_type {
+        return false;
     }
 
-    for rule in policy {
-        // (a) Tx‑type must match
-        if rule.tx_type != tx_type {
-            continue;
-        }
-
-        // (b) Destination pattern must match
-        if !match_destination(&rule.destination, &dest_addr, groups, allowlists) {
-            continue;
-        }
-
-        // (c) Signer pattern must match
-        if !match_signer(&rule.signer, &user_action.signer, groups) {
-            continue;
-        }
-
-        // (d) Match the signature with the signer
-        match_signature(&user_action.signer, &user_action).expect("signature verification failed");
-
-        // (e) Asset pattern must match
-        if !match_asset(&rule.asset, &asset_addr) {
-            continue;
-        }
-
-        // (f) Contract calls must NOT specify an explicit asset
-        if tx_type == TxType::ContractCall && !matches!(rule.asset, AssetPattern::Any) {
-            continue;
-        }
-
-        // (g) Minimum threshold – not yet implemented (future work)
-
-        // (h) Take the rule's action
-        return matches!(rule.action, ActionType::Allow);
+    // (b) Destination address must match the rule's destination pattern.
+    if !match_destination(&rule.destination, &dest_addr, groups, allowlists) {
+        return false;
     }
 
-    false // BLOCK by default, no matching rule found
+    // (c) The action's signer must match the rule's signer pattern.
+    if !match_signer(&rule.signer, &user_action.signer, groups) {
+        return false;
+    }
+
+    // (d) The signature must be valid for the claimed signer.
+    // This is a critical check and will abort the entire proof on failure.
+    verify_signature(&user_action.signer, user_action);
+
+    // (e) The action's asset must match the rule's asset pattern.
+    if !match_asset(&rule.asset, &asset_addr) {
+        return false;
+    }
+
+    // (f) A special case: ContractCall rules should not specify a specific asset.
+    if tx_type == TxType::ContractCall && !matches!(rule.asset, AssetPattern::Any) {
+        return false;
+    }
+
+    // If all checks passed, the user action is allowed by this rule.
+    true
 }

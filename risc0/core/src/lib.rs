@@ -121,10 +121,7 @@ pub struct PolicyLine {
     // **Minimum** is intentionally omitted for the moment – future work.
     // ───────────────────────────────────────────────────────────────────────
     pub asset: AssetPattern,
-    pub action: ActionType,
 }
-
-pub type Policy = Vec<PolicyLine>; // must be stored in ascending `id` order
 
 /// Canonical pseudo‑address used to represent native ETH transfers.
 pub const ETH_ASSET: [u8; 20] = [0u8; 20];
@@ -138,4 +135,16 @@ pub struct UserAction {
     pub data: Vec<u8>,      // calldata (empty for plain ETH transfers)
     pub signer: [u8; 20],   // recovered signer address
     pub signature: Vec<u8>, // signature of the action
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MerklePath {
+    pub leaf_index: u64,         // The 0-based index of the leaf from the left
+    pub siblings: Vec<[u8; 32]>, // The sibling hashes from bottom to top
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PublicInputs {
+    root: [u8; 32],
+    action: UserAction,
 }

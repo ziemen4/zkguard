@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 use bincode::Options;
 use risc0_zkvm::guest::{entry, env};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use zkguard_core::{keccak256, Policy, UserAction};
+use zkguard_core::{keccak256, MerklePath, PolicyLine, UserAction};
 
 use zkguard_guest::policy_engine::run_policy_checks;
 
@@ -30,31 +30,51 @@ fn canonicalise_lists(
     (canon, bytes)
 }
 
-// TODO: benchmark whether *rejecting* non-canonical inputs and failing the
-//       proof is cheaper than the in-circuit canonicalisation we do here.
-fn canonicalise_policy(mut raw: Policy) -> (Policy, Vec<u8>) {
-    raw.sort_by_key(|l| l.id);
-    // Detect duplicate IDs (optional, but guards against ambiguity):
-    for win in raw.windows(2) {
-        if win[0].id == win[1].id {
-            panic!("duplicate policy id");
+/// Verifies a Merkle proof for a given leaf against a root.
+///
+/// It computes the Merkle root from a leaf, its index, and a path of sibling
+/// hashes. The result is then compared against the expected root. This function
+/// assumes the `MerklePath` struct contains the leaf's index and its sibling hashes.
+///
+/// # Arguments
+/// * `root` - The expected Merkle root.
+/// * `leaf_bytes` - The serialized bytes of the leaf node (the `PolicyLine`).
+/// * `proof` - The `MerklePath` containing the `leaf_index` and `siblings`.
+///
+/// # Returns
+/// `true` if the computed root matches the expected root, `false` otherwise.
+fn verify_merkle_proof(root: &[u8; 32], leaf_bytes: &[u8], proof: &MerklePath) -> bool {
+    let mut computed_hash = keccak256(leaf_bytes);
+    let mut current_index = proof.leaf_index;
+
+    for sibling_hash in &proof.siblings {
+        let mut combined = Vec::with_capacity(64);
+        if current_index % 2 == 0 {
+            // Current node is a left child, sibling is on the right
+            combined.extend_from_slice(&computed_hash);
+            combined.extend_from_slice(sibling_hash);
+        } else {
+            // Current node is a right child, sibling is on the left
+            combined.extend_from_slice(sibling_hash);
+            combined.extend_from_slice(&computed_hash);
         }
+        computed_hash = keccak256(&combined);
+        current_index /= 2; // Move up to the parent level
     }
-    let bytes = bincode::DefaultOptions::new()
-        .with_fixint_encoding()
-        .serialize(&raw)
-        .expect("serialise canonical policy");
-    (raw, bytes)
+
+    computed_hash == *root
 }
 
 // ================================================================
 // Implements a line‑by‑line policy evaluator for wallet actions and
 // exposes a `main` that the ZKP wrapper invokes.  Frames sent by the
 // host arrive in the following order:
-//   1. UserAction   (bincode, fixint)
-//   2. Policy       (Vec<PolicyLine>)
-//   3. Groups       (HashMap<String, Vec<[u8;20]>>)
-//   4. Allow‑lists  (HashMap<String, Vec<[u8;20]>>)
+//   0. Merkle root   (32 bytes)
+//   1. UserAction    (bincode, fixint)
+//   2. Policy line   (bincode, fixint)
+//   3. Merkle path   (bincode, fixint)
+//   4. Groups        (HashMap<String, Vec<[u8;20]>>)
+//   5. Allow‑lists   (HashMap<String, Vec<[u8;20]>>)
 // ------------------------------------------------
 // Any failure to meet policy results in `assert!` which aborts the
 // circuit.  On success, we commit the following hashes so the wrapper
@@ -66,25 +86,69 @@ fn canonicalise_policy(mut raw: Policy) -> (Policy, Vec<u8>) {
 entry!(main);
 
 fn main() {
-    // 1. read the frame sent by the host ------------------------
-    let bytes: Vec<u8> = env::read_frame();
+    // ──────────────────────────────────────────────────────────────────────
+    // 0. Merkle‑root (32 bytes)
+    // ──────────────────────────────────────────────────────────────────────
+    env::log("[ZKGuard] Reading Merkle root from the prover environment...");
+    let root_bytes: Vec<u8> = env::read_frame();
+    env::log(&format!(
+        "[ZKGuard] Policy Merkle root length in bytes: {:?}",
+        root_bytes.len()
+    ));
+    let policy_merkle_root: [u8; 32] = root_bytes
+        .clone()
+        .try_into()
+        .expect("expected 32 bytes for Merkle root");
+    env::log(&format!(
+        "[ZKGuard] Policy Merkle root: {:?}",
+        policy_merkle_root
+    ));
 
-    // 2. deserialize it (bincode, fixint) -----------------------
+    // ──────────────────────────────────────────────────────────────────────
+    // 1. UserAction
+    // ──────────────────────────────────────────────────────────────────────
+    let bytes: Vec<u8> = env::read_frame();
+    println!("[ZKGuard] User action length in bytes: {:?}", bytes.len());
     let user_action: UserAction = bincode::DefaultOptions::new()
         .with_fixint_encoding()
         .deserialize(&bytes)
-        .expect("deserialize ProofInput");
-
-    // 3. policy ------------------------------------------------------------
-    let policy_raw_bytes: Vec<u8> = env::read_frame();
-    let raw_policy: Policy = bincode::DefaultOptions::new()
+        .expect("deserialize UserAction");
+    println!("[ZKGuard] User action: {:?}", user_action);
+    // ──────────────────────────────────────────────────────────────────────
+    // 2. Allow‑list leaf – this is the single policy line to check
+    // ──────────────────────────────────────────────────────────────────────
+    let bytes_policy_line: Vec<u8> = env::read_frame();
+    println!(
+        "[ZKGuard] Policy line length in bytes: {:?}",
+        bytes_policy_line.len()
+    );
+    let policy_line: PolicyLine = bincode::DefaultOptions::new()
         .with_fixint_encoding()
-        .deserialize(&policy_raw_bytes)
-        .expect("deserialize Policy");
-    let (policy, policy_bytes) = canonicalise_policy(raw_policy);
+        .deserialize(&bytes_policy_line)
+        .expect("deserialize PolicyLine");
+    println!("[ZKGuard] Policy line: {:?}", policy_line);
+    // ──────────────────────────────────────────────────────────────────────
+    // 3. Merkle path
+    // ──────────────────────────────────────────────────────────────────────
+    let path_bytes: Vec<u8> = env::read_frame();
+    println!(
+        "[ZKGuard] Merkle path length in bytes: {:?}",
+        path_bytes.len()
+    );
+    let policy_merkle_proof = bincode::DefaultOptions::new()
+        .with_fixint_encoding()
+        .deserialize::<MerklePath>(&path_bytes)
+        .expect("deserialize MerklePath");
+    println!("[ZKGuard] Merkle path: {:?}", policy_merkle_proof);
 
-    // 4. groups ------------------------------------------------------------
+    // ──────────────────────────────────────────────────────────────────────
+    // 4. Groups
+    // ──────────────────────────────────────────────────────────────────────
     let groups_raw_bytes: Vec<u8> = env::read_frame();
+    println!(
+        "[ZKGuard] Groups length in bytes: {:?}",
+        groups_raw_bytes.len()
+    );
     let raw_groups: HashMap<String, Vec<[u8; 20]>> = bincode::DefaultOptions::new()
         .with_fixint_encoding()
         .deserialize(&groups_raw_bytes)
@@ -94,9 +158,16 @@ fn main() {
         .iter()
         .map(|(k, v)| (k.clone(), v.iter().copied().collect()))
         .collect();
+    println!("[ZKGuard] Groups: {:?}", groups_sets);
 
-    // 5. allow‑lists -------------------------------------------------------
+    // ──────────────────────────────────────────────────────────────────────
+    // 5. Allow‑lists
+    // ──────────────────────────────────────────────────────────────────────
     let allow_raw_bytes: Vec<u8> = env::read_frame();
+    println!(
+        "[ZKGuard] Allow-lists length in bytes: {:?}",
+        allow_raw_bytes.len()
+    );
     let raw_allow: HashMap<String, Vec<[u8; 20]>> = bincode::DefaultOptions::new()
         .with_fixint_encoding()
         .deserialize(&allow_raw_bytes)
@@ -106,22 +177,39 @@ fn main() {
         .iter()
         .map(|(k, v)| (k.clone(), v.iter().copied().collect()))
         .collect();
+    println!("[ZKGuard] Allow-lists: {:?}", allow_sets);
 
-    // 6. evaluate policy ----------------------------------------
-    let allowed = run_policy_checks(&policy, &groups_sets, &allow_sets, &user_action);
+    // ──────────────────────────────────────────────────────────────────────
+    // 6. Verify the Merkle proof for the policy line
+    // ──────────────────────────────────────────────────────────────────────
+    let proof_is_valid = verify_merkle_proof(
+        &policy_merkle_root,
+        &bytes_policy_line,
+        &policy_merkle_proof,
+    );
+    assert!(proof_is_valid, "merkle-proof-invalid");
+
+    // ──────────────────────────────────────────────────────────────────────
+    // 7. Verify the user action against the policy line
+    // ──────────────────────────────────────────────────────────────────────
+    let allowed = run_policy_checks(&policy_line, &groups_sets, &allow_sets, &user_action);
     assert!(allowed, "policy-violation");
 
-    // 7. commitments
+    // ──────────────────────────────────────────────────────────────────────
+    // 8. Commit the hashes of the inputs used for verification
+    // ──────────────────────────────────────────────────────────────────────
     let call_hash = keccak256(&user_action.data);
-    let policy_hash = keccak256(&policy_bytes);
+    let root = root_bytes
+        .try_into()
+        .expect("expected 32 bytes for Merkle root");
     let groups_hash = keccak256(&groups_bytes);
     let allow_hash = keccak256(&allow_bytes);
 
     println!("[ZKGuard] Call hash: {:?}", call_hash);
-    println!("[ZKGuard] Policy hash: {:?}", policy_hash);
+    println!("[ZKGuard] Policy Merkle root: {:?}", root);
     println!("[ZKGuard] Groups hash: {:?}", groups_hash);
     println!("[ZKGuard] Allow-list hash: {:?}", allow_hash);
-    let hashes: Vec<[u8; 32]> = vec![call_hash, policy_hash, groups_hash, allow_hash];
+    let hashes: Vec<[u8; 32]> = vec![call_hash, root, groups_hash, allow_hash];
     println!("[ZKGuard] Committing hashes: {:?}", hashes);
     env::commit(&hashes);
 }
@@ -136,14 +224,14 @@ mod tests {
     use k256::elliptic_curve::rand_core::OsRng;
     use sha3::{Digest, Keccak256};
     use zkguard_core::{
-        ActionType, AssetPattern, DestinationPattern, Policy, PolicyLine, SignerPattern, TxType,
-        UserAction,
+        AssetPattern, DestinationPattern, PolicyLine, SignerPattern, TxType, UserAction,
     };
 
     /*─────────────────  helpers  ─────────────────*/
 
     // Helper to hash the UserAction exactly like the guest code
     fn hash_user_action(ua: &UserAction) -> [u8; 32] {
+        // This must match the signature recovery logic in `run_policy_checks`
         let mut h = Keccak256::new();
         h.update(&ua.to);
         h.update(&ua.value.to_be_bytes());
@@ -176,14 +264,17 @@ mod tests {
         (HashMap::new(), HashMap::new())
     }
 
-    /// Wrap the engine, treating *panic* as a “block”
+    /// Wrap the engine, treating *panic* as a “block”.
+    /// This now tests if a *single rule* allows the action, reflecting the new ZK logic.
     fn is_allowed(
-        p: &Policy,
+        rule: &PolicyLine,
         g: &HashMap<String, HashSet<[u8; 20]>>,
         a: &HashMap<String, HashSet<[u8; 20]>>,
         ua: &UserAction,
     ) -> bool {
-        std::panic::catch_unwind(|| run_policy_checks(p, g, a, ua)).unwrap_or(false)
+        // We expect `run_policy_checks` to find a matching rule in the slice.
+        // In the refactored tests, the slice `&[*rule]` contains just the one rule.
+        std::panic::catch_unwind(|| run_policy_checks(rule, g, a, ua)).unwrap_or(false)
     }
 
     /// Tiny address helper
@@ -193,40 +284,66 @@ mod tests {
 
     /*─────────────────  tests  ─────────────────*/
 
+    // ✅ Happy Path: A valid transfer that matches the policy should be allowed.
+    #[test]
+    fn happy_path_transfer_allowed() {
+        let mut ua = UserAction {
+            to: addr(0x10), // Destination is in GroupA
+            value: 1,
+            data: Vec::new(),
+            signer: [0u8; 20],
+            signature: Vec::new(),
+        };
+        let (signer, sig, _sk) = make_sig(&ua);
+        ua.signer = signer; // Signer is exact
+        ua.signature = sig;
+
+        let mut groups = HashMap::<String, HashSet<[u8; 20]>>::new();
+        groups.insert("GroupA".into(), HashSet::from([addr(0x10)]));
+
+        let rule = PolicyLine {
+            id: 1,
+            tx_type: TxType::Transfer,
+            destination: DestinationPattern::Group("GroupA".into()),
+            signer: SignerPattern::Exact(signer),
+            asset: AssetPattern::Any,
+        };
+
+        let allow = HashMap::new();
+        assert!(is_allowed(&rule, &groups, &allow, &ua));
+    }
+
     // 1 ─ Transfer rule but action is ContractCall  → Block
     #[test]
     fn transfer_rule_vs_contract_call() {
         let mut ua = UserAction {
             to: addr(0x02),
             value: 0,
-            data: vec![0xaa], // contract call
+            data: vec![0xaa], // this makes it a contract call
             signer: [0u8; 20],
             signature: Vec::new(),
         };
-
         let (signer, sig, _sk) = make_sig(&ua);
         ua.signer = signer;
         ua.signature = sig;
 
         let rule = PolicyLine {
             id: 1,
-            tx_type: TxType::Transfer,
+            tx_type: TxType::Transfer, // Rule expects a transfer
             destination: DestinationPattern::Any,
             signer: SignerPattern::Exact(signer),
             asset: AssetPattern::Any,
-            action: ActionType::Allow,
         };
 
         let (g, a) = empty_maps();
-        assert!(!is_allowed(&vec![rule], &g, &a, &ua));
+        assert!(!is_allowed(&rule, &g, &a, &ua));
     }
 
     // 2 ─ Destination group mismatch  → Block
     #[test]
     fn destination_group_mismatch() {
-        // signer + sig first
         let mut ua = UserAction {
-            to: addr(0x11),
+            to: addr(0x11), // This address is NOT in GroupA
             value: 1,
             data: Vec::new(),
             signer: [0u8; 20],
@@ -246,18 +363,17 @@ mod tests {
             destination: DestinationPattern::Group("GroupA".into()),
             signer: SignerPattern::Exact(signer),
             asset: AssetPattern::Any,
-            action: ActionType::Allow,
         };
 
         let allow = HashMap::new();
-        assert!(!is_allowed(&vec![rule], &groups, &allow, &ua));
+        assert!(!is_allowed(&rule, &groups, &allow, &ua));
     }
 
     // 3 ─ Destination allow-list mismatch  → Block
     #[test]
     fn destination_allowlist_mismatch() {
         let mut ua = UserAction {
-            to: addr(0x21),
+            to: addr(0x21), // This address is NOT in AllowA
             value: 1,
             data: Vec::new(),
             signer: [0u8; 20],
@@ -276,11 +392,10 @@ mod tests {
             destination: DestinationPattern::Allowlist("AllowA".into()),
             signer: SignerPattern::Exact(signer),
             asset: AssetPattern::Any,
-            action: ActionType::Allow,
         };
 
         let groups = HashMap::new();
-        assert!(!is_allowed(&vec![rule], &groups, &allow, &ua));
+        assert!(!is_allowed(&rule, &groups, &allow, &ua));
     }
 
     // 4 ─ Signer group mismatch  → Block
@@ -293,8 +408,8 @@ mod tests {
             signer: [0u8; 20],
             signature: Vec::new(),
         };
-        let (sign_good, sig, _sk) = make_sig(&ua); // produce *valid* signer
-        ua.signer = sign_good;
+        let (signer_actual, sig, _sk) = make_sig(&ua);
+        ua.signer = signer_actual; // The actual signer is not in GroupA
         ua.signature = sig;
 
         let mut groups = HashMap::<String, HashSet<[u8; 20]>>::new();
@@ -306,17 +421,15 @@ mod tests {
             destination: DestinationPattern::Any,
             signer: SignerPattern::Group("GroupA".into()),
             asset: AssetPattern::Any,
-            action: ActionType::Allow,
         };
 
         let allow = HashMap::new();
-        assert!(!is_allowed(&vec![rule], &groups, &allow, &ua));
+        assert!(!is_allowed(&rule, &groups, &allow, &ua));
     }
 
-    // 5 ─ Signer *Exact*, but signature **forged**  → Block
+    // 5 ─ Signer *Exact*, but signature **forged** → Block
     #[test]
     fn signature_invalid() {
-        // Step 1: build the action (we'll sign it with a *different* key)
         let mut ua = UserAction {
             to: addr(0x42),
             value: 1,
@@ -325,19 +438,19 @@ mod tests {
             signature: Vec::new(),
         };
 
-        // Step 2: get actual signer and signature
+        // The policy expects a signature from `addr_true`.
         let (addr_true, _sig, _sk) = make_sig(&ua);
-        ua.signer = addr_true;
+        ua.signer = addr_true; // Set the *claimed* signer
 
-        // Step 3: generate a different signature and update the ua with it
-        let sk = SigningKey::random(&mut OsRng);
+        // But we sign the message with a *different, fake* key.
+        let sk_fake = SigningKey::random(&mut OsRng);
         let message_hash = hash_user_action(&ua);
-        let Ok((signature, recovery_id)) = sk.sign_prehash_recoverable(&message_hash) else {
+        let Ok((signature, recovery_id)) = sk_fake.sign_prehash_recoverable(&message_hash) else {
             panic!("Failed to sign user action");
         };
         let mut fake_sig_bytes = signature.to_bytes().to_vec();
         fake_sig_bytes.push(recovery_id.to_byte());
-        ua.signature = fake_sig_bytes;
+        ua.signature = fake_sig_bytes; // Use the forged signature
 
         let rule = PolicyLine {
             id: 1,
@@ -345,11 +458,11 @@ mod tests {
             destination: DestinationPattern::Any,
             signer: SignerPattern::Exact(addr_true),
             asset: AssetPattern::Any,
-            action: ActionType::Allow,
         };
 
         let (g, a) = empty_maps();
-        assert!(!is_allowed(&vec![rule], &g, &a, &ua));
+        // The signature recovery inside `run_policy_checks` will fail.
+        assert!(!is_allowed(&rule, &g, &a, &ua));
     }
 
     // 6 ─ Asset exact mismatch  → Block
@@ -358,7 +471,7 @@ mod tests {
         let mut ua = UserAction {
             to: addr(0x51),
             value: 1,
-            data: Vec::new(),
+            data: Vec::new(), // This implies native asset (e.g., ETH)
             signer: [0u8; 20],
             signature: Vec::new(),
         };
@@ -371,86 +484,10 @@ mod tests {
             tx_type: TxType::Transfer,
             destination: DestinationPattern::Any,
             signer: SignerPattern::Exact(signer),
-            asset: AssetPattern::Exact(addr(0xaa)), // expects USDT
-            action: ActionType::Allow,
+            asset: AssetPattern::Exact(addr(0xaa)), // Rule expects a specific token
         };
 
         let (g, a) = empty_maps();
-        assert!(!is_allowed(&vec![rule], &g, &a, &ua));
-    }
-
-    // 7 ─ Tx-type mismatch (ContractCall vs Transfer)  → Block
-    #[test]
-    fn tx_type_mismatch_any_asset() {
-        let mut ua = UserAction {
-            to: addr(0x61),
-            value: 0,
-            data: vec![0xbe],
-            signer: [0u8; 20],
-            signature: Vec::new(),
-        };
-        let (signer, sig, _sk) = make_sig(&ua);
-        ua.signer = signer;
-        ua.signature = sig;
-
-        let rule = PolicyLine {
-            id: 1,
-            tx_type: TxType::Transfer,
-            destination: DestinationPattern::Any,
-            signer: SignerPattern::Any,
-            asset: AssetPattern::Any,
-            action: ActionType::Allow,
-        };
-
-        let (g, a) = empty_maps();
-        assert!(!is_allowed(&vec![rule], &g, &a, &ua));
-    }
-
-    // 8 ─ Explicit Block rule  → Block
-    #[test]
-    fn explicit_block_rule() {
-        let mut ua = UserAction {
-            to: addr(0x71),
-            value: 1,
-            data: Vec::new(),
-            signer: [0u8; 20],
-            signature: Vec::new(),
-        };
-        let (signer, sig, _sk) = make_sig(&ua);
-        ua.signer = signer;
-        ua.signature = sig;
-
-        let mut allow = HashMap::<String, HashSet<[u8; 20]>>::new();
-        allow.insert("BlockB".into(), HashSet::from([addr(0x71)]));
-
-        let rule = PolicyLine {
-            id: 1,
-            tx_type: TxType::Transfer,
-            destination: DestinationPattern::Allowlist("BlockB".into()),
-            signer: SignerPattern::Any,
-            asset: AssetPattern::Any,
-            action: ActionType::Block,
-        };
-
-        let groups = HashMap::new();
-        assert!(!is_allowed(&vec![rule], &groups, &allow, &ua));
-    }
-
-    // 9 ─ Empty policy  → Block
-    #[test]
-    fn empty_policy_blocks() {
-        let mut ua = UserAction {
-            to: addr(0x81),
-            value: 1,
-            data: Vec::new(),
-            signer: [0u8; 20],
-            signature: Vec::new(),
-        };
-        let (signer, sig, _sk) = make_sig(&ua);
-        ua.signer = signer;
-        ua.signature = sig;
-
-        let (g, a) = empty_maps();
-        assert!(!is_allowed(&Vec::new(), &g, &a, &ua));
+        assert!(!is_allowed(&rule, &g, &a, &ua));
     }
 }
