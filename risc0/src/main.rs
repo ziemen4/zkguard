@@ -5,11 +5,12 @@ use k256::ecdsa::SigningKey;
 use k256::elliptic_curve::rand_core::OsRng;
 use risc0_zkvm::{default_prover, ExecutorEnv};
 use rs_merkle::MerkleTree;
-use sha3::{Digest, Keccak256};
 use std::collections::HashMap;
+// CHANGE: Import the `Hasher` trait from tiny_keccak
+use tiny_keccak::{Hasher, Keccak};
 use zkguard_core::{
-    hash_policy_line_for_merkle_tree, AssetPattern, DestinationPattern, Keccak256MerkleHasher,
-    MerklePath, PolicyLine, SignerPattern, TxType, UserAction,
+    hash_policy_line_for_merkle_tree, AssetPattern, DestinationPattern, MerklePath,
+    PolicyLine, Sha256MerkleHasher, SignerPattern, TxType, UserAction,
 };
 use zkguard_methods::{ZKGUARD_POLICY_ELF, ZKGUARD_POLICY_ID};
 
@@ -21,13 +22,23 @@ fn encode<T: serde::Serialize>(data: &T) -> Vec<u8> {
         .unwrap()
 }
 
-// Helper to hash the UserAction exactly like the guest code
+// CHANGE: Updated to use the correct tiny-keccak API
 fn hash_user_action(ua: &UserAction) -> [u8; 32] {
-    let mut h = Keccak256::new();
+    // 1. Create a Keccak-256 hasher instance
+    let mut h = Keccak::v256();
+    // 2. Create an output buffer for the hash
+    let mut output = [0u8; 32];
+
+    // 3. Update the hasher with data
     h.update(&ua.to);
     h.update(&ua.value.to_be_bytes());
     h.update(&ua.data);
-    h.finalize().into()
+
+    // 4. Finalize into the buffer
+    h.finalize(&mut output);
+
+    // 5. Return the result
+    output
 }
 
 /// ERC‑20 transfer(address,uint256) function selector (big‑endian).
@@ -41,7 +52,13 @@ fn main() -> Result<()> {
     // ---------------------------------------------------------------------
     let sk = SigningKey::random(&mut OsRng);
     let pk_bytes = sk.verifying_key().to_encoded_point(false).as_bytes()[1..].to_vec();
-    let from_addr: [u8; 20] = Keccak256::digest(&pk_bytes)[12..].try_into()?;
+
+    // CHANGE: Manually hash to derive address, since `Keccak::digest` doesn't exist
+    let mut hasher = Keccak::v256();
+    let mut pk_hash = [0u8; 32];
+    hasher.update(&pk_bytes);
+    hasher.finalize(&mut pk_hash);
+    let from_addr: [u8; 20] = pk_hash[12..].try_into()?;
 
     // ---------------------------------------------------------------------
     // Addresses
@@ -108,7 +125,7 @@ fn main() -> Result<()> {
         hash_policy_line_for_merkle_tree(&rule_0),
         hash_policy_line_for_merkle_tree(&rule_1),
     ];
-    let tree: MerkleTree<Keccak256MerkleHasher> = MerkleTree::from_leaves(&hashed_leaves);
+    let tree: MerkleTree<Sha256MerkleHasher> = MerkleTree::from_leaves(&hashed_leaves);
     let root = tree.root();
     let proof = tree.proof(&[0]);
     let path_hashes: Vec<[u8; 32]> = proof.proof_hashes().to_vec();

@@ -8,8 +8,9 @@ extern crate alloc;
 use alloc::string::String;
 use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
 use risc0_zkvm::guest::abort;
-use sha3::{Digest, Keccak256};
 use std::collections::{HashMap, HashSet};
+// Use the standard `tiny-keccak` crate. The [patch] in Cargo.toml will accelerate it.
+use tiny_keccak::{Hasher, Keccak};
 use zkguard_core::{
     AssetPattern, DestinationPattern, PolicyLine, SignerPattern, TxType, UserAction, ETH_ASSET,
 };
@@ -61,12 +62,17 @@ fn match_destination(
     }
 }
 
+// Use the standard streaming API from `tiny-keccak`.
 fn hash_user_action(user_action: &UserAction) -> [u8; 32] {
-    let mut h = Keccak256::new();
-    h.update(&user_action.to);
-    h.update(&user_action.value.to_be_bytes());
-    h.update(&user_action.data);
-    h.finalize().into()
+    let mut hasher = Keccak::v256();
+    let mut output = [0u8; 32];
+
+    hasher.update(&user_action.to);
+    hasher.update(&user_action.value.to_be_bytes());
+    hasher.update(&user_action.data);
+
+    hasher.finalize(&mut output);
+    output
 }
 
 /// Evaluate the signer against the signer pattern.
@@ -102,17 +108,22 @@ fn verify_signature(signer: &[u8; 20], ua: &UserAction) {
     let digest = hash_user_action(ua);
 
     /* 3. recover pubkey --------------------------------------------------*/
+    // CHANGE: Pass a simple reference `&digest` instead of `&digest.into()`.
     let Ok(vk) = VerifyingKey::recover_from_prehash(&digest, &sig, rec) else {
         abort("recover failed")
     };
 
     /* 4. derive address --------------------------------------------------*/
     let pk = vk.to_encoded_point(false); // 04 || X || Y
-    let mut h = Keccak256::new();
-    h.update(&pk.as_bytes()[1..]); // drop 0x04
-    let out = h.finalize();
+
+    // Use the standard `tiny-keccak` API for address derivation.
+    let mut hasher = Keccak::v256();
+    let mut keccak_hash = [0u8; 32];
+    hasher.update(&pk.as_bytes()[1..]); // drop 0x04 prefix
+    hasher.finalize(&mut keccak_hash);
+
     let mut addr = [0u8; 20];
-    addr.copy_from_slice(&out[12..]);
+    addr.copy_from_slice(&keccak_hash[12..]);
 
     if &addr != signer {
         abort("signer mismatch")

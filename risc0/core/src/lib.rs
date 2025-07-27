@@ -2,11 +2,12 @@ extern crate alloc;
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use bincode::Options; // FIX: Import the Options trait for bincode
-use rs_merkle::Hasher; // FIX: Import the correct Hasher trait for rs-merkle
+use bincode::Options;
 use serde::{Deserialize, Serialize};
-use tiny_keccak::Keccak; // FIX: Only import Keccak, not its conflicting Hasher trait
-
+use risc0_zkvm::sha::{Impl, Sha256};
+use rs_merkle::Hasher as MerkleHasher;
+use tiny_keccak::Keccak;
+use sha2::Digest;
 ////////////////////////////////////////////////////////////////
 //  Public constants (grouped so callers can use `constants::*`)
 ////////////////////////////////////////////////////////////////
@@ -36,15 +37,15 @@ pub fn keccak256(bytes: &[u8]) -> [u8; 32] {
 }
 
 #[derive(Clone)] // rs-merkle requires Hasher to be Clone
-pub struct Keccak256MerkleHasher;
+pub struct Sha256MerkleHasher;
 
 // FIX: This now correctly implements `rs_merkle::Hasher` because of the corrected imports.
-impl Hasher for Keccak256MerkleHasher {
-    type Hash = [u8; 32]; // Output type of the hash function (Keccak256 produces 32 bytes)
+impl MerkleHasher for Sha256MerkleHasher {
+    type Hash = [u8; 32]; // Output type of the hash function (fixed-size array)
 
-    fn hash(data: &[u8]) -> [u8; 32] {
-        // Use the common keccak256 function defined in this crate
-        keccak256(data)
+    fn hash(data: &[u8]) -> Self::Hash {
+        // Convert the resulting byte slice `&[u8]` into a fixed-size array `[u8; 32]`
+        Impl::hash_bytes(data).as_bytes().try_into().unwrap()
     }
 }
 
@@ -85,12 +86,14 @@ pub fn parse_action<'a>(target: &[u8], data: &'a [u8]) -> Option<Action> {
 // It bincode-serializes the PolicyLine and then hashes the resulting bytes.
 // This ensures consistency between host (building tree) and guest (verifying leaf hash).
 pub fn hash_policy_line_for_merkle_tree(pl: &PolicyLine) -> [u8; 32] {
-    // FIX: This now compiles because the `bincode::Options` trait is in scope.
+    // Serialize the PolicyLine into bytes.
     let policy_line_bytes = bincode::DefaultOptions::new()
         .with_fixint_encoding()
-        .serialize(pl) // Serialize the *entire* PolicyLine struct
+        .serialize(pl)
         .expect("Failed to bincode serialize PolicyLine for hashing");
-    keccak256(&policy_line_bytes) // Then hash those bytes
+
+    // Hash the resulting bytes using the standard `sha2` crate.
+    sha2::Sha256::digest(&policy_line_bytes).into()
 }
 
 /*───────────────────────────────────────────────────────────────────────────*
