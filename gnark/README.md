@@ -1,103 +1,88 @@
-# ZKGuard Gnark Implementation
+# ZKGuard: `gnark` Implementation
 
-This repository contains a `gnark`-based implementation of the ZKGuard policy engine. ZKGuard is a system designed to validate on-chain user actions against a predefined policy list using zk-SNARKs. This implementation ensures that a user's action is compliant with a specific rule without revealing the entire policy set on-chain or within the proving circuit itself.
+This directory contains a `gnark`-based zk-SNARK implementation of the ZKGuard policy engine. It uses the Groth16 proving system to generate and verify proofs of policy compliance for on-chain actions.
 
------
+This implementation is designed for high performance and minimal proof size, making it well-suited for direct on-chain verification.
 
 ## 🏛️ Architecture
 
-The core of this ZKGuard implementation is built around efficiency and privacy. Instead of processing an entire list of policy rules within the circuit, the system relies on a **Merkle tree** to commit to the policy set.
+Following the core ZKGuard design, this implementation relies on a **Merkle tree** to commit to the policy set, ensuring the circuit's complexity remains constant regardless of the number of policy rules. The verification logic is encoded into a fixed arithmetic circuit.
 
-Here's how it works:
+A proof generated with this implementation validates two core properties:
+1.  **Proof of Membership**: The circuit verifies a Merkle proof for a given `PolicyLine` against a public `PolicyMerkleRoot`. This confirms the rule is an authentic part of the committed policy.
+2.  **Proof of Compliance**: The circuit verifies that the user's action (including transaction details and signatures) fully complies with the constraints of that authenticated `PolicyLine`.
 
-1.  **Policy Commitment**: Off-circuit, all individual policy rules are hashed and organized into a Merkle tree. The **root** of this tree serves as a succinct cryptographic commitment to the entire policy. This root is made public.
-2.  **Proving Process**: To prove that an action is valid, the prover supplies the circuit with:
-      * A single **`PolicyLine`** that explicitly allows the action.
-      * A **Merkle proof** demonstrating that this specific `PolicyLine` is a legitimate member of the tree that corresponds to the public `PolicyMerkleRoot`.
-      * The details of the `UserAction` being performed, along with a valid signature.
-3.  **Circuit Verification**: The ZK-SNARK circuit performs three primary checks:
-      * **Merkle Proof Verification**: It computes the Merkle root from the provided policy line and the proof path and asserts that this computed root matches the public `PolicyMerkleRoot`.
-      * **Signature Verification**: It verifies the user's signature against a hash of the action details (`To || Value || PaddedData`). This proves the action was authorized by the claimed signer.
-      * **Policy Compliance**: It verifies that the user's action is fully allowed by the provided `PolicyLine`. The policy model is **allow-only**; any action not explicitly permitted by a matching rule is implicitly blocked.
-
-This architecture ensures that the circuit's complexity remains constant, regardless of the size of the policy. The on-chain or public footprint is minimal—just a single 32-byte hash for the entire policy set.
-
------
-
-## 🔐 Cryptographic Primitives
+### 🔐 Cryptographic Primitives
 
 The circuit uses specific hash functions for different purposes to maintain correctness and compatibility with Ethereum standards.
 
-  * **SHA-256**: Used for all non-Ethereum-specific integrity checks.
+* **SHA-256**: Used for all non-Ethereum-specific integrity checks.
+    * **Policy Merkle Tree**: Hashing of policy lines and intermediate nodes.
+    * **`CallHash`**: The public commitment to the transaction's calldata.
+* **Legacy Keccak-256**: Used for all operations requiring Ethereum compatibility.
+    * **`ecrecover` Message Hash**: The message signed by the user is hashed with legacy Keccak-256 to be compatible with standard wallet signatures.
+    * **Address Derivation**: Recovering an Ethereum address from a public key.
 
-      * **Policy Merkle Tree**: Leaf and node hashing uses SHA-256.
-      * **`CallHash`**: The public commitment to the transaction's calldata is a SHA-256 hash.
+## 📜 Policy Structure
 
-  * **Legacy Keccak-256**: Used for all operations requiring Ethereum compatibility. Ethereum uses the original Keccak proposal, which differs slightly from the finalized FIPS-202 SHA-3 standard.
+A policy is defined by a `PolicyLine` struct, which specifies the conditions for an action to be allowed. The key fields and patterns are:
 
-      * **`ecrecover` Message Hash**: The message signed by the user is hashed with legacy Keccak-256.
-      * **Address Derivation**: Recovering an Ethereum address from a public key requires hashing the key with legacy Keccak-256.
-
------
+* `TxType`: `TT_TRANSFER` (for ETH or ERC20) or `TT_CONTRACTCALL`.
+* `DestinationTag`: `DP_ANY`, `DP_GROUP` (destination is in a group), or `DP_ALLOWLIST`.
+* `SignerTag`:
+    * `SP_ANY`: Any valid signature.
+    * `SP_EXACT`: A specific signer address.
+    * `SP_GROUP`: The signer must be a member of a specified group.
+    * `SP_THRESHOLD`: A minimum number of signers (`Threshold`) from a specified group (`SignerGroupIdx`) must have signed the action.
+* `AssetTag`: `AP_ANY` or `AP_EXACT` (a specific token address).
+* `AmountMax`: An optional maximum value for transfers.
+* `FunctionSelector`: An optional 4-byte selector to restrict contract calls to a specific function.
 
 ## ⚡ Circuit Inputs
 
 The `ZKGuardCircuit` is defined with the following public and private inputs:
 
 ### Public Inputs
-
 The circuit exposes four 32-byte hashes that serve as public commitments:
-
-  * `CallHash`: The **SHA-256** hash of the user action's calldata, padded to `MAX_DATA_BYTES`.
-  * `PolicyMerkleRoot`: The SHA-256 root hash of the policy Merkle tree.
-  * `GroupsHash`: A placeholder hash representing the set of address groups.
-  * `AllowHash`: A placeholder hash representing allow-lists.
+* `CallHash`: The SHA-256 hash of the user action's calldata.
+* `PolicyMerkleRoot`: The SHA-256 root hash of the policy Merkle tree.
+* `GroupsHash`: A placeholder hash representing the set of address groups.
+* `AllowHash`: A placeholder hash representing allow-lists.
 
 ### Private Witness
-
-  * **User Action**: The details of the on-chain action being attempted.
-      * `To`, `Value`, `Data`, `DataLen`, `Signer`
-      * `SigRHi`, `SigRLo`, `SigSHi`, `SigSLo`: The `secp256k1` signature components, split into 128-bit high/low parts.
-      * `SigV`: The signature's recovery ID.
-  * **Policy Line**: A single `PolicyLineWitness` that allegedly allows the action.
-  * **Merkle Proof**:
-      * `MerkleProofSiblings`: The sibling hashes required to reconstruct the Merkle root.
-      * `MerkleProofPath`: The path bits (0 for left, 1 for right) indicating the position of the hashes at each level of the tree.
-  * **Groups & Allowlists**: The full sets of addresses for groups and allow-lists used in policy evaluation.
-
------
+* **User Action**: The details of the on-chain action being attempted, including `To`, `Value`, `Data`, and one or more ECDSA signatures.
+* **Policy Line**: A single `PolicyLineWitness` that allegedly allows the action.
+* **Merkle Proof**: The sibling hashes and path bits needed to prove the policy line's membership in the tree.
+* **Groups & Allowlists**: The full address sets required for policy evaluation.
 
 ## 🚀 How to Run
 
-The `main.go` file serves as a complete, self-contained example that demonstrates the entire lifecycle of creating and verifying a proof.
+The `main.go` file provides a CLI to run various DAO policy examples, while `bench_test.go` can be used to measure performance.
 
 ### Prerequisites
+* Go (version 1.23 or later)
 
-  * Go (version 1.21 or later)
-
-### Steps
-
-1.  **Install Dependencies**: Navigate to the project directory and fetch the required `gnark` modules.
+### Running Examples
+1.  **Install Dependencies**: Navigate to the `gnark` directory and fetch the required modules.
     ```bash
     go mod tidy
     ```
-2.  **Run the Example**: Execute the `main.go` file.
-    ```bash
-    go run main.go
-    ```
+2.  **Run an Example**: You can run a single example or all of them. The `--prove` flag controls whether to perform a quick logic check or generate a full ZK-SNARK proof.
 
-### What the Script Does
+    * **Run a specific example (logic check only):**
+        ```bash
+        go run ./src/... -example advanced_signer_policies
+        ```
+    * **Run all examples and generate full proofs:**
+        ```bash
+        go run ./src/... -example all --prove
+        ```
 
-The `main` function in `main.go` executes the following steps:
+### Running Benchmarks
+To benchmark the performance of circuit compilation, setup, proving, and verification, run the following command:
+```bash
+go test -bench . -benchmem
+```
 
-1.  **Generates Test Data**: Creates a new signer key, an example user action (an ERC-20 token transfer), and a valid signature over the action's hash.
-2.  **Builds the Policy**: Defines a single policy rule and pads the remaining leaves with empty data to construct a full, balanced tree.
-3.  **Constructs a Merkle Tree**: Builds a SHA-256 Merkle tree from the serialized policy rules.
-4.  **Generates a Merkle Proof**: Creates a proof for the specific policy line that will be used in the witness.
-5.  **Compiles the Circuit**: Compiles the `ZKGuardCircuit` into a R1CS constraint system.
-6.  **Performs Trusted Setup**: Runs the Groth16 setup phase to generate a proving key (`pk`) and a verifying key (`vk`).
-7.  **Creates a Witness**: Populates the circuit with the public inputs and the private witness data.
-8.  **Generates a Proof**: Uses the proving key and the witness to generate a zk-SNARK proof.
-9.  **Verifies the Proof**: Uses the verifying key and the public witness to verify the proof.
+This will execute the scenarios defined in bench_test.go and report the time and memory allocations for each phase.
 
-If all steps are successful, the script will print a `✅ Proof verified successfully!` message.

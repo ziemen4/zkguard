@@ -1,47 +1,68 @@
-## ZKGuard Policies and Proof Generation
+# ZKGuard: Risc0 (zkVM) Implementation
 
-ZKGuard works by generating a **zero-knowledge proof (ZKP)** that attests to the "safety" of a user's on-chain action. This safety is determined by checking the action against a predefined security policy. The proof can then be verified on-chain or off-chain without revealing the specific policy details, ensuring both security and privacy.
+This directory contains a `risc0`-based implementation of the ZKGuard policy engine. It leverages a Zero-Knowledge Virtual Machine (zkVM) to prove policy compliance by executing a standard Rust program in a verifiable manner.
 
-### The Allow-List Model
+This approach provides significant flexibility, allowing for complex, expressive policies to be written in a general-purpose language without the need to design low-level arithmetic circuits.
 
-The system uses a strict **allow-list model**. The policy consists of a set of rules (`PolicyLine` objects), where each rule explicitly defines a permitted action. If a user's action does not perfectly match at least one `Allow` rule in the policy, it is considered blocked by default. This "default-deny" stance provides a strong security posture.
+## 🏛️ Architecture: Host & Guest
 
-The entire set of policy rules is committed to a **Merkle root**. This ensures that when a proof is generated for an action, it's not only proving compliance with a rule but also proving that the rule itself is a legitimate part of the established policy set.
+The zkVM model separates the program into two parts: a **host** and a **guest**.
 
-### Policy Structure (`PolicyLine`)
+* **Host Program** (`examples/dao_prover.rs`): This is an untrusted program that runs on a standard machine. Its primary role is to prepare all the necessary inputs for the proof. This includes loading the user's action, the specific policy rule that allows it, the corresponding Merkle proof, and any required context like address groups and allow-lists. It then invokes the guest program within the zkVM.
 
-Each rule within a policy defines the conditions for an action to be allowed. The structure is as follows:
+* **Guest Program** (`methods/guest/src/bin/zkguard_policy.rs`): This is the trusted program whose execution is proven. It runs inside the Risc0 zkVM. The guest receives the inputs from the host and performs the complete two-part verification:
+    1.  **Proof of Membership**: It verifies that the provided `PolicyLine` and `MerklePath` correctly compute to the trusted `Merkle Root`. This cryptographically proves that the rule is an authentic part of the established policy set.
+    2.  **Proof of Compliance**: It evaluates the `UserAction` against the now-authenticated `PolicyLine`. This involves checking the transaction type, destination, asset, amount, function selectors, and, critically, verifying all cryptographic signatures.
 
-* **`tx_type`**: The type of transaction.
-    * `Transfer`: A native asset (e.g., ETH) or an ERC-20 token transfer.
-    * `ContractCall`: Any other interaction with a smart contract.
-* **`destination`**: The recipient of the transaction or asset.
-    * `Any`: Any address is permitted.
-    * `Group(name)`: The address must belong to a predefined group (e.g., "Team Wallets").
-    * `Allowlist(name)`: The address must be on a specific, named allow-list (e.g., "Approved DeFi Protocols").
-* **`signer`**: The address that signed the user action.
-    * `Any`: Any signer is permitted.
-    * `Exact(address)`: Must be a specific address.
-    * `Group(name)`: The signer must belong to a predefined group.
-* **`asset`**: The asset being transferred. For `ContractCall`, this is typically ignored.
-    * `Any`: Any asset is permitted (or not applicable).
-    * `Exact(token_address)`: Must be a specific ERC-20 token address.
-* **`action`**: The outcome if all conditions match.
-    * `Allow`: The action is permitted. In the current model, this is the only action type used.
+If both steps succeed, the zkVM generates a ZKP (`Receipt`) which contains a `Journal`. The guest commits the public hashes of the inputs (`CallHash`, `PolicyMerkleRoot`, `GroupsHash`, `AllowHash`) to this journal, making them available for public verification.
 
-### Proof Generation in Risc0
+## 📜 Policy Structure
 
-The proof generation happens inside the Risc0 zkVM guest. The guest program receives the following inputs from the host:
+Policies are defined using Rust structs and enums located in the `zkguard_core` crate. This enables strong typing and expressive patterns.
 
-1.  The **User Action** to be verified.
-2.  A single **Policy Line** that supposedly allows the action.
-3.  A **Merkle Path** to prove the policy line's inclusion in the policy set.
-4.  The trusted **Merkle Root** of the entire policy set.
-5.  Auxiliary data like **Groups** and **Allow-lists**.
+* `PolicyLine`: The core struct defining a single rule.
+* `TxType`: `Transfer` or `ContractCall`.
+* `DestinationPattern`:
+    * `Any`
+    * `Group(String)`: Destination must be in a named group (e.g., "TeamWallets").
+    * `Allowlist(String)`: Destination must be in a named list (e.g., "ApprovedDEXs").
+* `SignerPattern`:
+    * `Any`: Any valid signature.
+    * `Exact([u8; 20])`: A specific signer address.
+    * `Group(String)`: The signer must belong to a named group.
+    * `Threshold { group: String, threshold: u8 }`: A minimum number of signers from a named group must have signed.
+* `AssetPattern`: `Any` or `Exact([u8; 20])` (a specific token address).
 
-The guest then performs two critical verification steps:
+## 🚀 How to Run
 
-1.  **Proof of Membership**: It verifies that the provided `PolicyLine` and `MerklePath` correctly compute to the trusted `Merkle Root`. This cryptographically proves that the rule is authentic.
-2.  **Proof of Compliance**: It evaluates the `UserAction` against the `PolicyLine`, ensuring every field (`tx_type`, `destination`, `signer`, `asset`) matches the rule's conditions and that the signature is valid.
+The project uses the Rust toolchain and Cargo for building and running. The `dao_prover` example serves as the main entry point for generating proofs for various predefined DAO security policies.
 
-If both steps succeed, the zkVM generates a ZKP, which serves as a verifiable seal of approval for the user's action.
+### Prerequisites
+* Rust, configured with the toolchain specified in `rust-toolchain.toml`. If you have `rustup` installed, it will automatically use the correct version when you are in this directory.
+    ```bash
+    rustup toolchain install 1.86.0
+    ```
+
+### Running Examples
+
+To run any of the examples, use the `dao_prover` example runner from the `risc0` directory. Specify the policy you want to test using the `--example` flag.
+
+1.  **Run the "Contributor Payments" example:**
+    ```bash
+    cargo run --release --example dao_prover -- --example contributor_payments
+    ```
+2.  **Run the "Advanced Signer Policies" (2-of-2 threshold) example:**
+    ```bash
+    cargo run --release --example dao_prover -- --example advanced_signer_policies
+    ```
+
+A full list of available examples can be found in `examples/README.md`. Each run will execute the host program, which invokes the zkVM to prove the action, and finally verifies the generated proof.
+
+## ⛓️ On-Chain Verification
+
+The generated proof (`Receipt`) can be verified on an EVM-compatible blockchain. The `contracts/src/ZKGuard.sol` contract provides a reference implementation for this.
+
+The `verifyAndForward` function accepts the Risc0 `seal` (the proof) and the `journal`. It performs the following checks:
+1.  Calls the Risc0 verifier contract to verify the integrity of the proof itself.
+2.  Asserts that the public hashes committed in the journal match the trusted hashes stored in the `ZKGuard` contract's state (`policy_hash`, `groups_hash`, etc.).
+3.  If verification succeeds, it decodes the `userAction` and forwards the call to its intended destination.
