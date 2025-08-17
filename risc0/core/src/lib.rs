@@ -39,7 +39,6 @@ pub fn keccak256(bytes: &[u8]) -> [u8; 32] {
 #[derive(Clone)] // rs-merkle requires Hasher to be Clone
 pub struct Sha256MerkleHasher;
 
-// FIX: This now correctly implements `rs_merkle::Hasher` because of the corrected imports.
 impl MerkleHasher for Sha256MerkleHasher {
     type Hash = [u8; 32]; // Output type of the hash function (fixed-size array)
 
@@ -124,6 +123,8 @@ pub enum SignerPattern {
     Exact([u8; 20]),
     /// Matches if the signer is contained in the named group.
     Group(String),
+    /// Matches if a threshold of signers from the named group have signed.
+    Threshold { group: String, threshold: u8 },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -151,6 +152,8 @@ pub struct PolicyLine {
     // **Minimum** is intentionally omitted for the moment – future work.
     // ───────────────────────────────────────────────────────────────────────
     pub asset: AssetPattern,
+    pub amount_max: Option<u128>,
+    pub function_selector: Option<[u8; 4]>,
 }
 
 /// Canonical pseudo-address used to represent native ETH transfers.
@@ -163,8 +166,7 @@ pub struct UserAction {
     pub to: [u8; 20],       // target contract or direct recipient
     pub value: u128,        // native token amount (wei)
     pub data: Vec<u8>,      // calldata (empty for plain ETH transfers)
-    pub signer: [u8; 20],   // recovered signer address
-    pub signature: Vec<u8>, // signature of the action
+    pub signatures: Vec<Vec<u8>>, // signatures of the action
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

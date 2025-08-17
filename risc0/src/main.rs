@@ -90,8 +90,7 @@ fn main() -> Result<()> {
         to: usdt_addr,
         value: 0,
         data,
-        signer: from_addr,
-        signature: vec![], // Will be filled in next
+        signatures: vec![], // Will be filled in next
     };
 
     // Sign the Keccak256 hash of the action
@@ -101,7 +100,7 @@ fn main() -> Result<()> {
     // Append the recovery ID to the 64-byte signature to form the 65-byte Ethereum signature
     let mut sig_bytes = signature.to_bytes().to_vec();
     sig_bytes.push(recovery_id.to_byte());
-    user_action.signature = sig_bytes;
+    user_action.signatures = vec![sig_bytes];
 
     // ---------------------------------------------------------------------
     // Build the *policy*
@@ -110,8 +109,13 @@ fn main() -> Result<()> {
         id: 1,
         tx_type: TxType::Transfer,
         destination: DestinationPattern::Any, // no restriction
-        signer: SignerPattern::Exact(from_addr),
+        signer: SignerPattern::Threshold {
+            group: "Admins".to_string(),
+            threshold: 1,
+        },
         asset: AssetPattern::Exact(usdt_addr),
+        amount_max: Some(amount), // max 1 USDT
+        function_selector: None,
     };
     let rule_1 = PolicyLine {
         id: 2,
@@ -119,11 +123,24 @@ fn main() -> Result<()> {
         destination: DestinationPattern::Allowlist("USDC-Allowlist".into()),
         signer: SignerPattern::Any,            // any signer
         asset: AssetPattern::Exact(usdc_addr), // only USDC
+        amount_max: None, // no limit
+        function_selector: None,
+    };
+
+    let rule_2 = PolicyLine {
+        id: 3,
+        tx_type: TxType::ContractCall,
+        destination: DestinationPattern::Any,
+        signer: SignerPattern::Exact(from_addr),
+        asset: AssetPattern::Any,
+        amount_max: None,
+        function_selector: Some([0x7f, 0xf3, 0x6a, 0xb5]), // swapExactETHForTokens
     };
 
     let hashed_leaves = vec![
         hash_policy_line_for_merkle_tree(&rule_0),
         hash_policy_line_for_merkle_tree(&rule_1),
+        hash_policy_line_for_merkle_tree(&rule_2),
     ];
     let tree: MerkleTree<Sha256MerkleHasher> = MerkleTree::from_leaves(&hashed_leaves);
     let root = tree.root();
@@ -135,8 +152,8 @@ fn main() -> Result<()> {
         siblings: path_hashes.clone(), // Changed `path` to `siblings`
     };
     let merkle_root: [u8; 32] = root.expect("Merkle tree should have a root");
-    // Empty maps (we're not using groups / allow-lists for this rule)
-    let groups: HashMap<String, Vec<[u8; 20]>> = HashMap::new();
+    let mut groups: HashMap<String, Vec<[u8; 20]>> = HashMap::new();
+    groups.insert("Admins".to_string(), vec![from_addr]);
     let allows: HashMap<String, Vec<[u8; 20]>> = HashMap::new();
 
     // ---------------------------------------------------------------------

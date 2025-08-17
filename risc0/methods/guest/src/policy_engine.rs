@@ -16,7 +16,7 @@ use zkguard_core::{
 };
 
 /*───────────────────────────────────────────────────────────────────────────*
- * Helper utilities (unchanged)                                             *
+ * Helper utilities                          *
  *───────────────────────────────────────────────────────────────────────────*/
 
 /// ERC-20 `transfer(address,uint256)` function selector (big-endian).
@@ -75,58 +75,76 @@ fn hash_user_action(user_action: &UserAction) -> [u8; 32] {
     output
 }
 
-/// Evaluate the signer against the signer pattern.
-fn match_signer(
-    pattern: &SignerPattern,
-    signer: &[u8; 20],
-    groups: &HashMap<String, HashSet<[u8; 20]>>,
-) -> bool {
-    match pattern {
-        SignerPattern::Any => true,
-        SignerPattern::Exact(addr) => addr == signer,
-        SignerPattern::Group(name) => groups.get(name).map_or(false, |set| set.contains(signer)),
+/// Recovers the signer's address from a 65-byte (r||s||v) Ethereum-style
+/// Recovers the signer's address from a 65-byte (r||s||v) Ethereum-style
+/// signature. Returns `None` on failure.
+fn recover_signer(digest: &[u8; 32], signature: &[u8]) -> Option<[u8; 20]> {
+    if signature.len() != 65 {
+        return None; // Invalid signature length
     }
-}
+    let (rs, v_byte) = signature.split_at(64);
+    let sig = Signature::try_from(rs).ok()?;
 
-/// Verify that `ua.signature` is a *65-byte* (r‖s‖v) Ethereum-style sig and
-/// that it was produced by `signer`. Aborts the proof on failure.
-fn verify_signature(signer: &[u8; 20], ua: &UserAction) {
-    /* 1. split r|s|v -----------------------------------------------------*/
-    if ua.signature.len() != 65 {
-        abort("bad sig len");
-    }
-    let (rs, v) = ua.signature.split_at(64);
-
-    let Ok(sig) = Signature::try_from(rs) else {
-        abort("sig parse")
-    };
-    let Ok(rec) = RecoveryId::try_from(v[0]) else {
-        abort("rec id")
+    // Normalize v to 0 or 1 for k256, from 27/28 in Ethereum
+    let v = match v_byte[0] {
+        27 => 0,
+        28 => 1,
+        v_val => v_val,
     };
 
-    /* 2. compute digest --------------------------------------------------*/
-    let digest = hash_user_action(ua);
+    let rec_id = RecoveryId::try_from(v).ok()?;
 
-    /* 3. recover pubkey --------------------------------------------------*/
-    // CHANGE: Pass a simple reference `&digest` instead of `&digest.into()`.
-    let Ok(vk) = VerifyingKey::recover_from_prehash(&digest, &sig, rec) else {
-        abort("recover failed")
-    };
+    let vk = VerifyingKey::recover_from_prehash(digest, &sig, rec_id).ok()?;
+    let pk = vk.to_encoded_point(false);
 
-    /* 4. derive address --------------------------------------------------*/
-    let pk = vk.to_encoded_point(false); // 04 || X || Y
-
-    // Use the standard `tiny-keccak` API for address derivation.
     let mut hasher = Keccak::v256();
     let mut keccak_hash = [0u8; 32];
-    hasher.update(&pk.as_bytes()[1..]); // drop 0x04 prefix
+    hasher.update(&pk.as_bytes()[1..]);
     hasher.finalize(&mut keccak_hash);
 
     let mut addr = [0u8; 20];
     addr.copy_from_slice(&keccak_hash[12..]);
+    Some(addr)
+}
 
-    if &addr != signer {
-        abort("signer mismatch")
+/// Evaluate the signer against the signer pattern.
+fn match_signer(
+    pattern: &SignerPattern,
+    ua: &UserAction,
+    groups: &HashMap<String, HashSet<[u8; 20]>>,
+) -> bool {
+    let digest = hash_user_action(ua);
+
+    match pattern {
+        SignerPattern::Any => !ua.signatures.is_empty(), // Any signature is fine, but there must be at least one.
+        SignerPattern::Exact(required_signer) => {
+            if ua.signatures.len() != 1 {
+                return false;
+            }
+            recover_signer(&digest, &ua.signatures[0])
+                .map_or(false, |signer| &signer == required_signer)
+        }
+        SignerPattern::Group(name) => {
+            if ua.signatures.len() != 1 {
+                return false;
+            }
+            let group = groups.get(name).expect("missing group");
+            recover_signer(&digest, &ua.signatures[0])
+                .map_or(false, |signer| group.contains(&signer))
+        }
+        SignerPattern::Threshold { group, threshold } => {
+            let required_group = groups.get(group).expect("missing group for threshold");
+            let mut valid_signers = HashSet::new();
+
+            for sig in &ua.signatures {
+                if let Some(signer) = recover_signer(&digest, sig) {
+                    if required_group.contains(&signer) {
+                        valid_signers.insert(signer);
+                    }
+                }
+            }
+            valid_signers.len() >= *threshold as usize
+        }
     }
 }
 
@@ -137,22 +155,27 @@ fn match_asset(pattern: &AssetPattern, asset: &[u8; 20]) -> bool {
     }
 }
 
-fn classify_user_action(user_action: &UserAction) -> (TxType, [u8; 20], [u8; 20]) {
+fn classify_user_action(user_action: &UserAction) -> (TxType, [u8; 20], [u8; 20], u128) {
     if user_action.value > 0 || is_erc20_transfer(&user_action.data) {
         // Transfer
         if user_action.value > 0 && user_action.data.is_empty() {
             // Native ETH transfer (`CALL` with value, empty calldata)
-            (TxType::Transfer, user_action.to, ETH_ASSET)
+            (
+                TxType::Transfer,
+                user_action.to,
+                ETH_ASSET,
+                user_action.value,
+            )
         } else {
             // ERC-20 token transfer via `transfer(address,uint256)`
             match parse_erc20_transfer(&user_action.data) {
-                Some((to, _amount)) => (TxType::Transfer, to, user_action.to), // `user_action.to` = token contract
+                Some((to, amount)) => (TxType::Transfer, to, user_action.to, amount), // `user_action.to` = token contract
                 None => abort("malformed ERC-20 transfer data"),
             }
         }
     } else {
         // Contract call
-        (TxType::ContractCall, user_action.to, ETH_ASSET) // `asset_addr` ignored for calls
+        (TxType::ContractCall, user_action.to, ETH_ASSET, 0) // `asset_addr` ignored for calls
     }
 }
 
@@ -172,7 +195,7 @@ pub fn run_policy_checks(
     user_action: &UserAction,
 ) -> bool {
     // 1. Classify the user action to determine its type, destination, and asset.
-    let (tx_type, dest_addr, asset_addr) = classify_user_action(user_action);
+    let (tx_type, dest_addr, asset_addr, amount) = classify_user_action(user_action);
 
     // 2. The host claims this `rule` allows the `user_action`. We now verify this claim.
     // Each check must pass for the action to be considered valid under this rule.
@@ -187,21 +210,36 @@ pub fn run_policy_checks(
         return false;
     }
 
-    // (c) The action's signer must match the rule's signer pattern.
-    if !match_signer(&rule.signer, &user_action.signer, groups) {
+    // (c) The action's signer(s) must match the rule's signer pattern.
+    // This check now includes signature verification.
+    if !match_signer(&rule.signer, user_action, groups) {
         return false;
     }
 
-    // (d) The signature must be valid for the claimed signer.
-    // This is a critical check and will abort the entire proof on failure.
-    verify_signature(&user_action.signer, user_action);
-
-    // (e) The action's asset must match the rule's asset pattern.
+    // (d) The action's asset must match the rule's asset pattern.
     if !match_asset(&rule.asset, &asset_addr) {
         return false;
     }
 
-    // (f) A special case: ContractCall rules should not specify a specific asset.
+    // (e) For transfers, if an amount_max is specified, check it.
+    if tx_type == TxType::Transfer {
+        if let Some(max_amount) = rule.amount_max {
+            if amount > max_amount {
+                return false; // Amount exceeds the maximum allowed by the policy
+            }
+        }
+    }
+
+    // (f) If the action is a contract call, check the function selector if specified.
+    if tx_type == TxType::ContractCall {
+        if let Some(function_selector) = rule.function_selector {
+            if user_action.data.len() < 4 || user_action.data[..4] != function_selector {
+                return false; // Function selector doesn't match the policy
+            }
+        }
+    }
+
+    // (g) A special case: ContractCall rules should not specify a specific asset.
     if tx_type == TxType::ContractCall && !matches!(rule.asset, AssetPattern::Any) {
         return false;
     }
