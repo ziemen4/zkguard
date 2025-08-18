@@ -83,25 +83,28 @@ type PolicyLine struct {
 }
 
 type ZKGuardCircuit struct {
+	// Public inputs
 	CallHash         [32]frontend.Variable `gnark:",public"`
 	PolicyMerkleRoot [32]frontend.Variable `gnark:",public"`
 	GroupsHash       [32]frontend.Variable `gnark:",public"`
 	AllowHash        [32]frontend.Variable `gnark:",public"`
-	To               frontend.Variable
-	Value            frontend.Variable
-	Data             [MAX_DATA_BYTES]frontend.Variable
-	DataLen          frontend.Variable
-	// --- Updated Signature Witness ---
+	// On-chain action
+	To         frontend.Variable
+	Value      frontend.Variable
+	Data       [MAX_DATA_BYTES]frontend.Variable
+	DataLen    frontend.Variable
 	Signatures [MAX_SIGNATURES]SignatureWitness // Replaces single signature fields
 	NumSigs    frontend.Variable                // Number of provided signatures
-	// --- End Update ---
-	PolicyLine          PolicyLineWitness
+	// Poliicy line to enforce
+	PolicyLine PolicyLineWitness
+	// Proof of membership for the policy line
 	MerkleProofSiblings [MERKLE_TREE_DEPTH][32]frontend.Variable
 	MerkleProofPath     [MERKLE_TREE_DEPTH]frontend.Variable
-	Groups              [MAX_GROUPS][MAX_ADDRS_PER_SET]frontend.Variable
-	GroupSizes          [MAX_GROUPS]frontend.Variable
-	AllowLists          [MAX_ALLOWLISTS][MAX_ADDRS_PER_SET]frontend.Variable
-	AllowSizes          [MAX_ALLOWLISTS]frontend.Variable
+	// Groups and AllowLists
+	Groups     [MAX_GROUPS][MAX_ADDRS_PER_SET]frontend.Variable
+	GroupSizes [MAX_GROUPS]frontend.Variable
+	AllowLists [MAX_ALLOWLISTS][MAX_ADDRS_PER_SET]frontend.Variable
+	AllowSizes [MAX_ALLOWLISTS]frontend.Variable
 }
 
 // --- Helper Primitives (isZero, eq, etc.) ---
@@ -327,7 +330,7 @@ func (c *ZKGuardCircuit) Define(api frontend.API) error {
 	destList, destListSize := selectSet(api, line.DestinationIdx, c.AllowLists[:], c.AllowSizes[:], MAX_ALLOWLISTS)
 
 	// Evaluate Signer policies
-	mSignerAny := eq(api, line.SignerTag, SP_ANY) // Any policy just needs >=1 valid signature, which is implicitly checked by the logic.
+	mSignerAny := eq(api, line.SignerTag, SP_ANY) // SP_ANY policy just needs >=1 valid signature, which is implicitly checked by the logic.
 
 	mSignerExactTag := eq(api, line.SignerTag, SP_EXACT)
 	mSignerExactCheck := eq(api, recoveredSigners[0], line.SignerAddr)
@@ -350,30 +353,6 @@ func (c *ZKGuardCircuit) Define(api frontend.API) error {
 
 	// Evaluate other policies (mDest, mAsset, etc)
 	mTx := eq(api, line.TxType, txType)
-	var selectedGroup [MAX_ADDRS_PER_SET]frontend.Variable
-	for i := range selectedGroup {
-		selectedGroup[i] = 0
-	}
-	var selectedGroupSize frontend.Variable = 0
-	for k := 0; k < MAX_GROUPS; k++ {
-		isCorrectIndex := eq(api, line.DestinationIdx, k)
-		selectedGroupSize = api.Select(isCorrectIndex, c.GroupSizes[k], selectedGroupSize)
-		for j := 0; j < MAX_ADDRS_PER_SET; j++ {
-			selectedGroup[j] = api.Select(isCorrectIndex, c.Groups[k][j], selectedGroup[j])
-		}
-	}
-	var selectedAllowList [MAX_ADDRS_PER_SET]frontend.Variable
-	for i := range selectedAllowList {
-		selectedAllowList[i] = 0
-	}
-	var selectedAllowListSize frontend.Variable = 0
-	for k := 0; k < MAX_ALLOWLISTS; k++ {
-		isCorrectIndex := eq(api, line.DestinationIdx, k)
-		selectedAllowListSize = api.Select(isCorrectIndex, c.AllowSizes[k], selectedAllowListSize)
-		for j := 0; j < MAX_ADDRS_PER_SET; j++ {
-			selectedAllowList[j] = api.Select(isCorrectIndex, c.AllowLists[k][j], selectedAllowList[j])
-		}
-	}
 	mDestAny := eq(api, line.DestinationTag, DP_ANY)
 	mDestGrp := api.And(eq(api, line.DestinationTag, DP_GROUP), inSet(api, destAddr, destGroup, destGroupSize))
 	mDestList := api.And(eq(api, line.DestinationTag, DP_ALLOWLIST), inSet(api, destAddr, destList, destListSize))
