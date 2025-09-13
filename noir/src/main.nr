@@ -1,12 +1,10 @@
 mod policy;
 
 use policy::{
-    UserAction, PolicyLine, DestinationPattern, SignerPattern, AssetPattern,
-    MAX_CALLDATA_SIZE, MAX_SIGNATURES, SIGNATURE_SIZE,
-    TX_TYPE_TRANSFER, TX_TYPE_CONTRACT_CALL,
-    DEST_PATTERN_ANY, DEST_PATTERN_GROUP, DEST_PATTERN_ALLOWLIST,
-    SIGNER_PATTERN_ANY, SIGNER_PATTERN_EXACT, SIGNER_PATTERN_GROUP, SIGNER_PATTERN_THRESHOLD,
-    ASSET_PATTERN_ANY, ASSET_PATTERN_EXACT,
+    ASSET_PATTERN_ANY, ASSET_PATTERN_EXACT, AssetPattern, DEST_PATTERN_ALLOWLIST, DEST_PATTERN_ANY,
+    DEST_PATTERN_GROUP, DestinationPattern, MAX_CALLDATA_SIZE, MAX_SIGNATURES, PolicyLine,
+    SIGNATURE_SIZE, SIGNER_PATTERN_ANY, SIGNER_PATTERN_EXACT, SIGNER_PATTERN_GROUP,
+    SIGNER_PATTERN_THRESHOLD, SignerPattern, TX_TYPE_CONTRACT_CALL, TX_TYPE_TRANSFER, UserAction,
 };
 
 // --- Imports for Noir v1.0.0-beta.9 ---
@@ -14,13 +12,21 @@ use dep::keccak256::keccak256;
 use std::ecdsa_secp256k1::verify_signature;
 // --------------------------------------
 
+// A struct to hold all the public outputs for the verifier.
+pub struct PublicOutputs {
+    call_hash: [u8; 32],
+    policy_hash: [u8; 32],
+    groups_hash: [u8; 32],
+    allow_hash: [u8; 32],
+}
+
 // ERC-20 `transfer(address,uint256)` selector.
 global TRANSFER_SELECTOR: [u8; 4] = [0xa9, 0x05, 0x9c, 0xbb];
 // Pseudo-address for native ETH.
 global ETH_ASSET: [u8; 20] = [0; 20];
 
 // Minimal verification context (plus pubkeys for each signature slot).
-struct VerificationContext {
+pub struct VerificationContext {
     groups: [[u8; 20]; MAX_SIGNATURES],
     group_name_hashes: [Field; MAX_SIGNATURES],
     allowlists: [[u8; 20]; MAX_SIGNATURES],
@@ -34,33 +40,45 @@ struct VerificationContext {
 // Slices 4 bytes from a 256-byte calldata array.
 fn slice_4_from_256(arr: [u8; 256], start: u32) -> [u8; 4] {
     let mut out = [0; 4];
-    for i in 0..4 { out[i] = arr[start + i]; }
+    for i in 0..4 {
+        out[i] = arr[start + i];
+    }
     out
 }
 
 // Slices 32 bytes from a 256-byte calldata array.
 fn slice_32_from_256(arr: [u8; 256], start: u32) -> [u8; 32] {
     let mut out = [0; 32];
-    for i in 0..32 { out[i] = arr[start + i]; }
+    for i in 0..32 {
+        out[i] = arr[start + i];
+    }
     out
 }
 
 // Convert an Ethereum 65-byte sig (r||s||v) into 64 bytes (r||s) for std verifier.
 fn sig64_from_eth(sig: [u8; SIGNATURE_SIZE]) -> [u8; 64] {
     let mut out = [0; 64];
-    for i in 0..64 { out[i] = sig[i]; }
+    for i in 0..64 {
+        out[i] = sig[i];
+    }
     out
 }
 
 // keccak256(x||y): take last 20 bytes as ETH address.
 fn eth_addr_from_pubkey(pubx: [u8; 32], puby: [u8; 32]) -> [u8; 20] {
     let mut pk = [0u8; 64];
-    for i in 0..32 { pk[i] = pubx[i]; }
-    for i in 0..32 { pk[32 + i] = puby[i]; }
+    for i in 0..32 {
+        pk[i] = pubx[i];
+    }
+    for i in 0..32 {
+        pk[32 + i] = puby[i];
+    }
     // keccak256 takes (bytes, len) in the external crate.
     let h: [u8; 32] = keccak256(pk, 64);
     let mut addr = [0u8; 20];
-    for i in 0..20 { addr[i] = h[12 + i]; }
+    for i in 0..20 {
+        addr[i] = h[12 + i];
+    }
     addr
 }
 
@@ -101,7 +119,7 @@ fn is_member(
     address: [u8; 20],
     members: [[u8; 20]; MAX_SIGNATURES],
     name_hashes: [Field; MAX_SIGNATURES],
-    required_hash: Field
+    required_hash: Field,
 ) -> bool {
     let mut found = false;
     for i in 0..MAX_SIGNATURES {
@@ -115,14 +133,23 @@ fn is_member(
 }
 
 // Destination matches policy?
-fn match_destination(pattern: DestinationPattern, addr: [u8; 20], ctx: VerificationContext) -> bool {
+fn match_destination(
+    pattern: DestinationPattern,
+    addr: [u8; 20],
+    ctx: VerificationContext,
+) -> bool {
     let mut ok = false;
     if pattern.kind == DEST_PATTERN_ANY {
         ok = true;
     } else if pattern.kind == DEST_PATTERN_GROUP {
         ok = is_member(addr, ctx.groups, ctx.group_name_hashes, pattern.name_hash);
     } else if pattern.kind == DEST_PATTERN_ALLOWLIST {
-        ok = is_member(addr, ctx.allowlists, ctx.allowlist_name_hashes, pattern.name_hash);
+        ok = is_member(
+            addr,
+            ctx.allowlists,
+            ctx.allowlist_name_hashes,
+            pattern.name_hash,
+        );
     }
     ok
 }
@@ -158,7 +185,12 @@ fn match_signer(pattern: SignerPattern, action: UserAction, ctx: VerificationCon
             let mut cond = false;
             if verified {
                 let who = eth_addr_from_pubkey(px, py);
-                cond = is_member(who, ctx.groups, ctx.group_name_hashes, pattern.group_name_hash);
+                cond = is_member(
+                    who,
+                    ctx.groups,
+                    ctx.group_name_hashes,
+                    pattern.group_name_hash,
+                );
             }
             res = cond;
         } else {
@@ -174,7 +206,12 @@ fn match_signer(pattern: SignerPattern, action: UserAction, ctx: VerificationCon
                 let ok = verify_signature(px, py, sig, digest);
                 if ok {
                     let who = eth_addr_from_pubkey(px, py);
-                    if is_member(who, ctx.groups, ctx.group_name_hashes, pattern.group_name_hash) {
+                    if is_member(
+                        who,
+                        ctx.groups,
+                        ctx.group_name_hashes,
+                        pattern.group_name_hash,
+                    ) {
                         valid += 1;
                     }
                 }
@@ -219,7 +256,9 @@ fn classify_user_action(action: UserAction) -> (Field, [u8; 20], [u8; 20], Field
 
         // recipient is bytes 16..36 of first arg
         let mut rcpt = [0u8; 20];
-        for i in 0..20 { rcpt[i] = action.data[16 + i]; }
+        for i in 0..20 {
+            rcpt[i] = action.data[16 + i];
+        }
         dest = rcpt;
 
         // asset is the token contract
@@ -239,8 +278,42 @@ fn classify_user_action(action: UserAction) -> (Field, [u8; 20], [u8; 20], Field
     (out_ty, dest, asset, amount)
 }
 
+// Hashes a PolicyLine to create a commitment. This is a simplified serialization.
+fn hash_policy_line(rule: PolicyLine) -> [u8; 32] {
+    let name_hash_be: [u8; 32] = rule.destination.name_hash.to_be_bytes::<32>();
+    keccak256(name_hash_be, 32)
+}
+
+// Hashes a list of members and their corresponding name hashes.
+fn hash_sets(
+    members: [[u8; 20]; MAX_SIGNATURES],
+    name_hashes: [Field; MAX_SIGNATURES],
+) -> [u8; 32] {
+    let mut buf = [0; MAX_SIGNATURES * (20 + 32)];
+    let mut len = 0;
+    for i in 0..MAX_SIGNATURES {
+        let hash_bytes = name_hashes[i].to_be_bytes::<32>();
+        // Only include non-empty entries in the hash
+        if name_hashes[i] != 0 {
+            for j in 0..20 {
+                buf[len] = members[i][j];
+                len += 1;
+            }
+            for j in 0..32 {
+                buf[len] = hash_bytes[j];
+                len += 1;
+            }
+        }
+    }
+    keccak256(buf, len)
+}
+
 // Main circuit entry point
-fn main(rule: PolicyLine, user_action: UserAction, ctx: VerificationContext) {
+pub fn main(
+    rule: PolicyLine,
+    user_action: UserAction,
+    ctx: VerificationContext,
+) -> pub PublicOutputs {
     let (tx_type, dest_addr, asset_addr, amount) = classify_user_action(user_action);
 
     // (a) type
@@ -271,4 +344,11 @@ fn main(rule: PolicyLine, user_action: UserAction, ctx: VerificationContext) {
         }
         assert(rule.asset.kind == ASSET_PATTERN_ANY);
     }
+
+    let call_hash = hash_user_action(user_action);
+    let policy_hash = hash_policy_line(rule); // Simplified policy hash
+    let groups_hash = hash_sets(ctx.groups, ctx.group_name_hashes);
+    let allow_hash = hash_sets(ctx.allowlists, ctx.allowlist_name_hashes);
+
+    PublicOutputs { call_hash, policy_hash, groups_hash, allow_hash }
 }
