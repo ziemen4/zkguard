@@ -91,6 +91,9 @@ pub fn hash_policy_line_for_merkle_tree(pl: &PolicyLine) -> [u8; 32] {
         .serialize(pl)
         .expect("Failed to bincode serialize PolicyLine for hashing");
 
+    // Print the policy bytes for debugging.
+    println!("PolicyLine bytes: {:?}", policy_line_bytes);
+
     // Hash the resulting bytes using the standard `sha2` crate.
     sha2::Sha256::digest(&policy_line_bytes).into()
 }
@@ -163,10 +166,11 @@ pub const ETH_ASSET: [u8; 20] = [0u8; 20];
 /// executed on-chain
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UserAction {
-    pub to: [u8; 20],       // target contract or direct recipient
-    pub value: u128,        // native token amount (wei)
-    pub data: Vec<u8>,      // calldata (empty for plain ETH transfers)
-    pub signatures: Vec<Vec<u8>>, // signatures of the action
+    pub to: [u8; 20],               // target contract or direct recipient
+    pub value: u128,                // native token amount (wei)
+    pub nonce: u64,                // Safe's current nonce for replay protection
+    pub data: Vec<u8>,              // calldata (empty for plain ETH transfers)
+    pub signatures: Vec<Vec<u8>>,   // one or more Ethereum-style signatures (65 bytes each)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

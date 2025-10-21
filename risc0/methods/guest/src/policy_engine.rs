@@ -70,6 +70,7 @@ fn hash_user_action(user_action: &UserAction) -> [u8; 32] {
     hasher.update(&user_action.to);
     hasher.update(&user_action.value.to_be_bytes());
     hasher.update(&user_action.data);
+    hasher.update(&user_action.nonce.to_be_bytes());
 
     hasher.finalize(&mut output);
     output

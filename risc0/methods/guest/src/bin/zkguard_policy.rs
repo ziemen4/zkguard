@@ -9,6 +9,46 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use zkguard_core::{MerklePath, PolicyLine, UserAction};
 use zkguard_guest::policy_engine::run_policy_checks;
 
+// Alloy: Solidity ABI definitions/encoding and Ethereum primitive types
+use alloy_primitives::{Address, U256, B256, Bytes};
+use alloy_sol_types::{sol, SolValue};   
+
+use tiny_keccak::{Hasher, Keccak};
+
+// Solidity ABI encoding for public input
+sol! {
+    struct PublicInput {
+        bytes32 claimedActionHash;
+        bytes32 claimedPolicyHash;
+        bytes32 claimedGroupsHash;
+        bytes32 claimedAllowHash;
+    }
+
+    struct Action {
+        address to;
+        uint256 value;
+        bytes   data;
+    }
+}
+
+fn keccak256(bytes: &[u8]) -> [u8; 32] {
+    let mut hasher = Keccak::v256();
+    let mut out = [0u8; 32];
+    hasher.update(bytes);
+    hasher.finalize(&mut out);
+    out
+}
+
+fn hash_user_action_keccak256(user_action: &UserAction) -> [u8; 32] {
+    let to = Address::from(user_action.to);
+    let value = U256::from(user_action.value); // widen u128 -> U256
+    let nonce = U256::from(user_action.nonce); // widen u128 -> U256
+    let data = Bytes::from(user_action.data.clone());
+
+    let encoded = (to, value, nonce, data).abi_encode_params();
+    keccak256(&encoded)
+}
+
 /// Canonicalises a map of lists: sorts addresses ascending (dedup) and uses
 /// a `BTreeMap` so keys are ordered.  Returns `(canonical, bytes)` where
 /// `bytes` is the bincode serialization of the canonical structure.
@@ -163,8 +203,8 @@ fn main() {
     // ──────────────────────────────────────────────────────────────────────
     // Commit the hashes of the inputs used for verification
     // ──────────────────────────────────────────────────────────────────────
-    // CHANGE: Use the cleaner `sha2` crate API for all hashes.
-    let call_hash: [u8; 32] = Sha256::digest(&user_action.data).into();
+    // Compute keccak256(abi.encode(to, value, data))
+    let call_hash: [u8; 32] = hash_user_action_keccak256(&user_action);
 
     let root: [u8; 32] = policy_merkle_root
         .try_into()
@@ -179,7 +219,20 @@ fn main() {
     env::log(&format!("[ZKGuard] Groups hash: {:?}", groups_hash));
     env::log(&format!("[ZKGuard] Allow-list hash: {:?}", allow_hash));
 
-    let hashes: Vec<[u8; 32]> = vec![call_hash, root, groups_hash, allow_hash];
-    env::log(&format!("[ZKGuard] Committing hashes: {:?}", hashes));
-    env::commit(&hashes);
+    let b256_call_hash: B256 = B256::from(call_hash);
+    let b256_root: B256 = B256::from(root);
+    let b256_groups_hash: B256 = B256::from(groups_hash);
+    let b256_allow_hash: B256 = B256::from(allow_hash);
+
+    let input = PublicInput {
+        claimedActionHash: b256_call_hash,
+        claimedPolicyHash: b256_root,
+        claimedGroupsHash: b256_groups_hash,
+        claimedAllowHash: b256_allow_hash,
+    };
+
+    let encoded = PublicInput::abi_encode(&input);
+    env::commit_slice(&encoded);
+
+    env::log(&format!("[ZKGuard] Committing hashes: {:?}", encoded));
 }

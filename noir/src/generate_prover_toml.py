@@ -10,11 +10,9 @@ MAX_CALLDATA_SIZE = 256
 MAX_SIGNATURES = 5
 SIGNATURE_SIZE = 65
 
-# tx_type: infer from your current setup (you used 0 for Transfer before)
 TX_TYPE_TRANSFER = 0
 TX_TYPE_CONTRACT_CALL = 1
 
-# pattern kinds (common mapping)
 DEST_PATTERN_ANY = 0
 DEST_PATTERN_GROUP = 1
 DEST_PATTERN_ALLOWLIST = 2
@@ -30,6 +28,15 @@ ASSET_PATTERN_EXACT = 1
 BN254_SCALAR_MODULUS = int(
     "21888242871839275222246405745257275088548364400416034343698204186575808495617"
 )
+
+# secp256k1 order (for low-s normalization)
+SECP256K1_N = int(
+    "0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141", 16
+)
+
+# Two deterministic dummy keys: A (for placeholder signature) and B (for placeholder pubkey)
+DUMMY_PRIV_A = bytes.fromhex("11" * 32)
+DUMMY_PRIV_B = bytes.fromhex("22" * 32)
 
 # ---- Helpers ----
 def keccak256(b: bytes) -> bytes:
@@ -55,13 +62,14 @@ def format_hex_array(
             b = (pad + b) if pad_side == "left" else (b + pad)
     return [f"0x{byte:02x}" for byte in b]
 
-def pad_list(lst, length, filler):
+def pad_list(lst, length, filler: bytes):
     return lst[:length] + [filler] * max(0, length - len(lst))
 
 def u256_be(n: int) -> bytes:
     return n.to_bytes(32, "big")
 
 def eth_addr_from_xy(x: bytes, y: bytes) -> bytes:
+    # (Your original: keccak(x||y)[12:])
     return keccak(x + y)[12:]
 
 def digest_for_user_action(to20: bytes, value_u256: int, data: bytes, data_len: int) -> bytes:
@@ -71,17 +79,105 @@ def digest_for_user_action(to20: bytes, value_u256: int, data: bytes, data_len: 
     buf += data[:data_len]
     return keccak(bytes(buf))
 
+def _low_s_normalize(sig65: bytes) -> bytes:
+    # sig65 = r(32) || s(32) || v(1)
+    if len(sig65) != 65:
+        raise ValueError("expected 65-byte signature {r,s,v}")
+    r = int.from_bytes(sig65[0:32], "big")
+    s = int.from_bytes(sig65[32:64], "big")
+    v = sig65[64]
+
+    # Normalize to low-s
+    if s > SECP256K1_N // 2:
+        s = SECP256K1_N - s
+        # Flip parity bit of v (supports 27/28 or 0/1)
+        if v in (27, 28):
+            v = 55 - v          # 27<->28
+        else:
+            v = v ^ 1           # 0<->1
+
+    r_b = r.to_bytes(32, "big")
+    s_b = s.to_bytes(32, "big")
+    return r_b + s_b + bytes([v])
+
 def sign_digest(privkey_bytes: bytes, digest32: bytes) -> tuple[bytes, bytes, bytes, bytes]:
     pk = PrivateKey(privkey_bytes)
     sig65 = pk.sign_recoverable(digest32, hasher=None)
+    sig65 = _low_s_normalize(sig65)
+
     pub_uncompressed = pk.public_key.format(compressed=False)  # 0x04||X||Y
     x, y = pub_uncompressed[1:33], pub_uncompressed[33:65]
     addr = eth_addr_from_xy(x, y)
     return sig65, x, y, addr
 
+def make_placeholder_for_digest(digest32: bytes) -> tuple[bytes, bytes, bytes]:
+    """
+    Produce a valid-but-non-matching placeholder:
+      - signature over 'digest32' using DummyKey A
+      - public key (x,y) from DummyKey B
+    This ensures verify_signature(pkB, sigA, digest32) returns false *cleanly*.
+    """
+    sig65_A, _, _, _ = sign_digest(DUMMY_PRIV_A, digest32)
+    _, xB, yB, _ = sign_digest(DUMMY_PRIV_B, b"\x01" * 32)  # any digest; we only need pk from B
+    return sig65_A, xB, yB
+
+def replace_zeros_with_placeholder(items: list[bytes], placeholder: bytes) -> list[bytes]:
+    """
+    Replace any all-zero item with 'placeholder'; keep non-zero entries intact.
+    """
+    out = []
+    zero = bytes(len(placeholder))
+    for it in items:
+        if len(it) == len(placeholder) and it == zero:
+            out.append(placeholder)
+        else:
+            out.append(it)
+    return out
+
+def to_bytearrays(lst: list[bytes], size: int) -> list[bytes]:
+    """Ensure each element is exactly 'size' bytes (truncate or right-pad with zeros)."""
+    out = []
+    for b in lst:
+        if len(b) > size:
+            out.append(b[:size])
+        elif len(b) < size:
+            out.append(b + b"\x00" * (size - len(b)))
+        else:
+            out.append(b)
+    return out
+
 def write_toml(user_action, rule, ctx, out_path: str):
+    # digest was computed in the scenario and stored (not written to TOML)
+    digest = user_action["_digest"]
+
+    # Build placeholder (valid-but-non-matching) for inactive slots
+    ph_sig65, ph_x, ph_y = make_placeholder_for_digest(digest)
+
+    # --- User action fields
     data_padded = user_action["data"].ljust(MAX_CALLDATA_SIZE, b"\x00")
-    sigs = pad_list(user_action["signatures"], MAX_SIGNATURES, b"\x00" * SIGNATURE_SIZE)
+
+    # Signatures: real + placeholders to fill up MAX_SIGNATURES
+    real_sigs = user_action["signatures"]  # list[bytes], each 65 bytes
+    placeholder_block = [ph_sig65] * (MAX_SIGNATURES - len(real_sigs))
+    sigs_full = (real_sigs + placeholder_block)[:MAX_SIGNATURES]
+    sigs_full = to_bytearrays(sigs_full, SIGNATURE_SIZE)
+
+    # --- Context pubkeys: replace zero entries with placeholder pkB, then pad
+    pkx = ctx["signer_pubkeys_x"][:]
+    pky = ctx["signer_pubkeys_y"][:]
+
+    # Normalize sizes to 32 bytes and replace zeroes with placeholder
+    pkx = to_bytearrays(pkx, 32)
+    pky = to_bytearrays(pky, 32)
+    pkx = replace_zeros_with_placeholder(pkx, ph_x)
+    pky = replace_zeros_with_placeholder(pky, ph_y)
+    # pad to MAX_SIGNATURES
+    if len(pkx) < MAX_SIGNATURES:
+        pkx += [ph_x] * (MAX_SIGNATURES - len(pkx))
+    if len(pky) < MAX_SIGNATURES:
+        pky += [ph_y] * (MAX_SIGNATURES - len(pky))
+    pkx = pkx[:MAX_SIGNATURES]
+    pky = pky[:MAX_SIGNATURES]
 
     toml_data = {
         "user_action": {
@@ -89,7 +185,7 @@ def write_toml(user_action, rule, ctx, out_path: str):
             "value": user_action["value"],
             "data": format_hex_array(data_padded, pad_to=MAX_CALLDATA_SIZE),
             "data_len": user_action["data_len"],
-            "signatures": [format_hex_array(s, pad_to=SIGNATURE_SIZE) for s in sigs],
+            "signatures": [format_hex_array(s, pad_to=SIGNATURE_SIZE) for s in sigs_full],
             "signature_count": user_action["signature_count"],
         },
         "rule": {
@@ -119,15 +215,17 @@ def write_toml(user_action, rule, ctx, out_path: str):
             "group_name_hashes": [bytes32_to_field_hex(h) for h in ctx["group_name_hashes"]],
             "allowlists": [format_hex_array(a, pad_to=20) for a in ctx["allowlists"]],
             "allowlist_name_hashes": [bytes32_to_field_hex(h) for h in ctx["allowlist_name_hashes"]],
-            "signer_pubkeys_x": [format_hex_array(pk, pad_to=32) for pk in ctx["signer_pubkeys_x"]],
-            "signer_pubkeys_y": [format_hex_array(pk, pad_to=32) for pk in ctx["signer_pubkeys_y"]],
+            "signer_pubkeys_x": [format_hex_array(pk, pad_to=32) for pk in pkx],
+            "signer_pubkeys_y": [format_hex_array(pk, pad_to=32) for pk in pky],
         },
     }
+
+    # Don't write the digest to TOML
     with open(out_path, "w") as f:
         toml.dump(toml_data, f)
     print(f"✅ Wrote {out_path}")
 
-# ---- Scenario 1 (kept): contributor_payments ----
+# ---- Scenarios ----
 def contributor_payments(privkey_hex: str):
     priv = bytes.fromhex(privkey_hex.removeprefix("0x"))
 
@@ -138,7 +236,6 @@ def contributor_payments(privkey_hex: str):
     group_name    = "TeamWallets"
     group_hash_b  = keccak256(group_name.encode())
 
-    # ERC20 transfer(to=team_wallet_1, amount)
     selector = bytes.fromhex("a9059cbb")
     data     = selector + team_wallet_1.rjust(32, b"\x00") + u256_be(amount)
     dlen     = len(data)
@@ -148,7 +245,8 @@ def contributor_payments(privkey_hex: str):
 
     user_action = {
         "to": usdc, "value": 0, "data": data, "data_len": dlen,
-        "signatures": [sig], "signature_count": 1
+        "signatures": [sig], "signature_count": 1,
+        "_digest": digest,
     }
     rule = {
         "id": 1, "tx_type": TX_TYPE_TRANSFER,
@@ -168,16 +266,13 @@ def contributor_payments(privkey_hex: str):
     }
     return user_action, rule, ctx
 
-# ---- Scenario 2: defi_swaps (ContractCall to ApprovedDEXs, asset ANY) ----
 def defi_swaps(privkey_hex: str):
     priv = bytes.fromhex(privkey_hex.removeprefix("0x"))
 
-    # Example approved DEX router (placeholder—replace with your real one if you like)
     dex_router = bytes.fromhex("7a250d5630b4cf539739df2c5dacb4c659f2488d")
     allowlist_name = "ApprovedDEXs"
     allowlist_hash_b = keccak256(allowlist_name.encode())
 
-    # Minimal call: swapExactTokensForTokens selector 0x38ed1739 (no args for demo)
     selector = bytes.fromhex("38ed1739")
     data     = selector
     dlen     = len(data)
@@ -187,7 +282,8 @@ def defi_swaps(privkey_hex: str):
 
     user_action = {
         "to": dex_router, "value": 0, "data": data, "data_len": dlen,
-        "signatures": [sig], "signature_count": 1
+        "signatures": [sig], "signature_count": 1,
+        "_digest": digest,
     }
     rule = {
         "id": 2, "tx_type": TX_TYPE_CONTRACT_CALL,
@@ -207,7 +303,6 @@ def defi_swaps(privkey_hex: str):
     }
     return user_action, rule, ctx
 
-# ---- Scenario 3: supply_lending (Transfer to ApprovedLendingProtocols, asset EXACT USDC) ----
 def supply_lending(privkey_hex: str):
     priv = bytes.fromhex(privkey_hex.removeprefix("0x"))
 
@@ -227,7 +322,8 @@ def supply_lending(privkey_hex: str):
 
     user_action = {
         "to": usdc, "value": 0, "data": data, "data_len": dlen,
-        "signatures": [sig], "signature_count": 1
+        "signatures": [sig], "signature_count": 1,
+        "_digest": digest,
     }
     rule = {
         "id": 3, "tx_type": TX_TYPE_TRANSFER,
@@ -247,7 +343,6 @@ def supply_lending(privkey_hex: str):
     }
     return user_action, rule, ctx
 
-# ---- Scenario 4: interact_dapps (ContractCall to ApprovedLendingProtocols, asset ANY) ----
 def interact_dapps(privkey_hex: str):
     priv = bytes.fromhex(privkey_hex.removeprefix("0x"))
 
@@ -255,7 +350,7 @@ def interact_dapps(privkey_hex: str):
     allowlist_name = "ApprovedLendingProtocols"
     allowlist_hash_b = keccak256(allowlist_name.encode())
 
-    selector = bytes.fromhex("abcdef01")  # arbitrary function for demo
+    selector = bytes.fromhex("abcdef01")  # arbitrary
     data     = selector
     dlen     = len(data)
 
@@ -264,7 +359,8 @@ def interact_dapps(privkey_hex: str):
 
     user_action = {
         "to": protocol, "value": 0, "data": data, "data_len": dlen,
-        "signatures": [sig], "signature_count": 1
+        "signatures": [sig], "signature_count": 1,
+        "_digest": digest,
     }
     rule = {
         "id": 4, "tx_type": TX_TYPE_CONTRACT_CALL,
@@ -284,13 +380,12 @@ def interact_dapps(privkey_hex: str):
     }
     return user_action, rule, ctx
 
-# ---- Scenario 5: amount_limits (Transfer to Group TeamWallets, EXACT USDC, max 10k) ----
 def amount_limits(privkey_hex: str):
     priv = bytes.fromhex(privkey_hex.removeprefix("0x"))
 
     team_wallet_1 = bytes.fromhex("1111111111111111111111111111111111111111")
     usdc          = bytes.fromhex("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48")
-    amount        = 8_000 * 10**6  # within the 10,000 limit
+    amount        = 8_000 * 10**6
     max_amount    = 10_000 * 10**6
 
     group_name    = "TeamWallets"
@@ -305,13 +400,14 @@ def amount_limits(privkey_hex: str):
 
     user_action = {
         "to": usdc, "value": 0, "data": data, "data_len": dlen,
-        "signatures": [sig], "signature_count": 1
+        "signatures": [sig], "signature_count": 1,
+        "_digest": digest,
     }
     rule = {
         "id": 5, "tx_type": TX_TYPE_TRANSFER,
         "destination": { "kind": DEST_PATTERN_GROUP, "name_hash_bytes": group_hash_b },
         "signer": { "kind": SIGNER_PATTERN_EXACT, "address": addr, "group_name_hash_bytes": b"\x00"*32, "threshold": 0 },
-        "asset": { "kind": ASSET_PATTERN_EXACT, "address": usdc },  # using EXACT USDC (no asset allowlist in circuit)
+        "asset": { "kind": ASSET_PATTERN_EXACT, "address": usdc },
         "has_amount_max": True, "amount_max": max_amount,
         "has_function_selector": False, "function_selector": b"\x00"*4
     }
@@ -325,15 +421,13 @@ def amount_limits(privkey_hex: str):
     }
     return user_action, rule, ctx
 
-# ---- Scenario 6: function_level_controls (ContractCall on DEX, specific selector) ----
 def function_level_controls(privkey_hex: str):
     priv = bytes.fromhex(privkey_hex.removeprefix("0x"))
 
-    dex_router = bytes.fromhex("7a250d5630b4cf539739df2c5dacb4c659f2488d")  # placeholder
+    dex_router = bytes.fromhex("7a250d5630b4cf539739df2c5dacb4c659f2488d")
     allowlist_name = "ApprovedDEXs"
     allowlist_hash_b = keccak256(allowlist_name.encode())
 
-    # swapExactETHForTokens selector
     selector = bytes.fromhex("7ff36ab5")
     data     = selector
     dlen     = len(data)
@@ -343,7 +437,8 @@ def function_level_controls(privkey_hex: str):
 
     user_action = {
         "to": dex_router, "value": 0, "data": data, "data_len": dlen,
-        "signatures": [sig], "signature_count": 1
+        "signatures": [sig], "signature_count": 1,
+        "_digest": digest,
     }
     rule = {
         "id": 6, "tx_type": TX_TYPE_CONTRACT_CALL,
@@ -363,16 +458,14 @@ def function_level_controls(privkey_hex: str):
     }
     return user_action, rule, ctx
 
-# ---- Scenario 7: advanced_signer_policies (Threshold 2 in GovernanceSigners) ----
 def advanced_signer_policies(privkey_hex_1: str, privkey_hex_2: str):
     k1 = bytes.fromhex(privkey_hex_1.removeprefix("0x"))
     k2 = bytes.fromhex(privkey_hex_2.removeprefix("0x"))
 
-    dex_router = bytes.fromhex("7a250d5630b4cf539739df2c5dacb4c659f2488d")  # placeholder
+    dex_router = bytes.fromhex("7a250d5630b4cf539739df2c5dacb4c659f2488d")
     group_name = "GovernanceSigners"
     group_hash_b = keccak256(group_name.encode())
 
-    # Simple call (selector only)
     selector = bytes.fromhex("38ed1739")
     data     = selector
     dlen     = len(data)
@@ -384,23 +477,19 @@ def advanced_signer_policies(privkey_hex_1: str, privkey_hex_2: str):
 
     user_action = {
         "to": dex_router, "value": 0, "data": data, "data_len": dlen,
-        "signatures": [sig1, sig2], "signature_count": 2
+        "signatures": [sig1, sig2], "signature_count": 2,
+        "_digest": digest,
     }
     rule = {
         "id": 7, "tx_type": TX_TYPE_CONTRACT_CALL,
-        "destination": { "kind": DEST_PATTERN_ALLOWLIST, "name_hash_bytes": group_hash_b },  # <-- NOTE: destination should be DEX allowlist in text
+        # corrected to DEX allowlist
+        "destination": { "kind": DEST_PATTERN_ALLOWLIST, "name_hash_bytes": keccak256(b"ApprovedDEXs") },
         "signer": { "kind": SIGNER_PATTERN_THRESHOLD, "address": b"\x00"*20, "group_name_hash_bytes": group_hash_b, "threshold": 2 },
         "asset": { "kind": ASSET_PATTERN_ANY, "address": b"\x00"*20 },
         "has_amount_max": False, "amount_max": 0,
         "has_function_selector": False, "function_selector": b"\x00"*4
     }
-    # Fix destination allowlist to DEXs, not GovernanceSigners name; keep GovernanceSigners for signer group
-    dex_allowlist_name = "ApprovedDEXs"
-    dex_allowlist_hash_b = keccak256(dex_allowlist_name.encode())
 
-    rule["destination"]["name_hash_bytes"] = dex_allowlist_hash_b  # correct the dest allowlist
-
-    # ctx: signer group membership (addresses), + dest allowlist member
     ctx_groups = [addr1, addr2] + [b"\x00"*20]*(MAX_SIGNATURES-2)
     ctx_group_hashes = [group_hash_b, group_hash_b] + [b"\x00"*32]*(MAX_SIGNATURES-2)
 
@@ -408,7 +497,7 @@ def advanced_signer_policies(privkey_hex_1: str, privkey_hex_2: str):
         "groups": ctx_groups,
         "group_name_hashes": ctx_group_hashes,
         "allowlists": [dex_router] + [b"\x00"*20]*(MAX_SIGNATURES-1),
-        "allowlist_name_hashes": [dex_allowlist_hash_b] + [b"\x00"*32]*(MAX_SIGNATURES-1),
+        "allowlist_name_hashes": [keccak256(b"ApprovedDEXs")] + [b"\x00"*32]*(MAX_SIGNATURES-1),
         "signer_pubkeys_x": [x1, x2] + [b"\x00"*32]*(MAX_SIGNATURES-2),
         "signer_pubkeys_y": [y1, y2] + [b"\x00"*32]*(MAX_SIGNATURES-2),
     }

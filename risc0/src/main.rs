@@ -33,6 +33,7 @@ fn hash_user_action(ua: &UserAction) -> [u8; 32] {
     h.update(&ua.to);
     h.update(&ua.value.to_be_bytes());
     h.update(&ua.data);
+    h.update(&ua.nonce.to_be_bytes());
 
     // 4. Finalize into the buffer
     h.finalize(&mut output);
@@ -53,7 +54,7 @@ fn main() -> Result<()> {
     let sk = SigningKey::random(&mut OsRng);
     let pk_bytes = sk.verifying_key().to_encoded_point(false).as_bytes()[1..].to_vec();
 
-    // CHANGE: Manually hash to derive address, since `Keccak::digest` doesn't exist
+    // Derive address from signer
     let mut hasher = Keccak::v256();
     let mut pk_hash = [0u8; 32];
     hasher.update(&pk_bytes);
@@ -90,6 +91,7 @@ fn main() -> Result<()> {
         to: usdt_addr,
         value: 0,
         data,
+        nonce: 0,
         signatures: vec![], // Will be filled in next
     };
 
@@ -137,6 +139,7 @@ fn main() -> Result<()> {
         function_selector: Some([0x7f, 0xf3, 0x6a, 0xb5]), // swapExactETHForTokens
     };
 
+    // Build the Merkle Tree for the policy
     let hashed_leaves = vec![
         hash_policy_line_for_merkle_tree(&rule_0),
         hash_policy_line_for_merkle_tree(&rule_1),
@@ -148,9 +151,11 @@ fn main() -> Result<()> {
     let path_hashes: Vec<[u8; 32]> = proof.proof_hashes().to_vec();
 
     let merkle_path = MerklePath {
-        leaf_index: 0u64,              // Changed `index` to `leaf_index`
-        siblings: path_hashes.clone(), // Changed `path` to `siblings`
+        leaf_index: 0u64,
+        siblings: path_hashes.clone(),
     };
+
+    // Insert signer into the "Admins" group
     let merkle_root: [u8; 32] = root.expect("Merkle tree should have a root");
     let mut groups: HashMap<String, Vec<[u8; 20]>> = HashMap::new();
     groups.insert("Admins".to_string(), vec![from_addr]);
@@ -213,16 +218,5 @@ fn main() -> Result<()> {
     receipt.verify(ZKGUARD_POLICY_ID)?;
     println!("Verified!");
 
-    // The guest commits four 32-byte hashes; here we just dump them:
-    println!("Decoding committed hashes... ");
-    let hashes: Vec<[u8; 32]> = receipt.journal.decode()?;
-    assert_eq!(hashes.len(), 4);
-
-    println!("Committed hashes (call, policy, groups, allow):");
-    for (i, h) in hashes.iter().enumerate() {
-        println!("  {}: 0x{}", i, hex::encode(h));
-    }
-
-    println!("Decoded committed hashes.\n");
     Ok(())
 }

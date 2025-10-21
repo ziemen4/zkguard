@@ -9,13 +9,17 @@ interface IImageID {
 }
 
 contract ZKGuardWrapper {
+    /// Immutable verifier + imageId (pinned at construction time).
     /// @notice Image ID of the only zkVM binary to accept verification from.
     bytes32 public imageId;
-
-    IRiscZeroVerifier public immutable verifier;
+    IRiscZeroVerifier public immutable VERIFIER;
+    /// Policy root commitments pinned in the module.
+    bytes32 public immutable POLICY_HASH;
+    bytes32 public immutable GROUPS_HASH;
+    bytes32 public immutable ALLOW_HASH;
 
     /// simple replay-protection
-    mapping(address => mapping(uint64 => bool)) public used;
+    mapping(address => mapping(uint256 => bool)) public nonce;
 
     bytes32 public policy_hash;
     bytes32 public groups_hash;
@@ -27,10 +31,10 @@ contract ZKGuardWrapper {
         bytes32 _groups_hash,
         bytes32 _allow_hash
     ) {
-        verifier = IRiscZeroVerifier(_verifier);
-        policy_hash = _policy_hash;
-        groups_hash = _groups_hash;
-        allow_hash = _allow_hash;
+        VERIFIER = IRiscZeroVerifier(_verifier);
+        POLICY_HASH = _policy_hash;
+        GROUPS_HASH = _groups_hash;
+        ALLOW_HASH = _allow_hash;
     }
 
     /// @notice Verify proof & forward arbitrary call
@@ -40,36 +44,32 @@ contract ZKGuardWrapper {
         bytes calldata seal,
         bytes calldata journal // What the user wants to delegate to the target
     ) public payable {
-        // Verify if ZK proof is valid
-        verifier.verify(seal, imageId, sha256(journal));
+        // (1) Verify RISC Zero proof; inherits all invariants enforced by the canonical verifier.
+        bytes32 jdig = sha256(journal);
+        VERIFIER.verify(seal, imageId, jdig);
 
-        // Get public values from the journal
+        // (2) Decode journal claims + enforce against module state.
         (
-            bytes32 claimed_action_hash,
-            bytes32 claimed_policy_hash,
-            bytes32 claimed_groups_hash,
-            bytes32 claimed_allow_hash
+            bytes32 claimedActionHash,
+            bytes32 claimedPolicyHash,
+            bytes32 claimedGroupsHash,
+            bytes32 claimedAllowHash
         ) = abi.decode(journal, (bytes32, bytes32, bytes32, bytes32));
 
-        // Verify that userAction (the action to be performed) matches the claimed action hash
-        require(
-            claimed_action_hash == keccak256(userAction),
-            "action-hash-mismatch"
-        );
+        require(claimedPolicyHash == POLICY_HASH, "policy-hash-mismatch");
+        require(claimedGroupsHash == GROUPS_HASH, "groups-hash-mismatch");
+        require(claimedAllowHash == ALLOW_HASH, "allow-hash-mismatch");
 
-        // Verify that the claimed policy, groups, and allow hashes match the contract's state
-        require(claimed_policy_hash == policy_hash, "policy-hash-mismatch");
-        require(claimed_groups_hash == groups_hash, "groups-hash-mismatch");
-        require(claimed_allow_hash == allow_hash, "allow-hash-mismatch");
+        // (3) Decode the user action.
+        (address to, uint256 value, uint256 _nonce, bytes memory data) = abi
+            .decode(userAction, (address, uint256, uint256, bytes));
 
-        // Decode the user action
-        (
-            address to,
-            uint256 value,
-            bytes memory data,
-            address signer,
-            bytes memory signature
-        ) = abi.decode(userAction, (address, uint256, bytes, address, bytes));
+        // (4) Bind to exact user action.
+        bytes32 actionHash = keccak256(userAction);
+        require(claimedActionHash == actionHash, "action-hash-mismatch");
+
+        // (5) Simple replay-protection
+        require(!nonce[msg.sender][_nonce], "nonce-reuse");
 
         // Forward the original user action to the target
         (bool ok, bytes memory ret) = to.call{value: value}(data);

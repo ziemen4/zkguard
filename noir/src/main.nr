@@ -199,24 +199,37 @@ fn match_signer(pattern: SignerPattern, action: UserAction, ctx: VerificationCon
     } else if pattern.kind == SIGNER_PATTERN_THRESHOLD {
         let mut valid: u32 = 0;
         for i in 0..MAX_SIGNATURES {
-            if i < action.signature_count {
-                let sig = sig64_from_eth(action.signatures[i]);
-                let px = ctx.signer_pubkeys_x[i];
-                let py = ctx.signer_pubkeys_y[i];
-                let ok = verify_signature(px, py, sig, digest);
-                if ok {
-                    let who = eth_addr_from_pubkey(px, py);
-                    if is_member(
-                        who,
-                        ctx.groups,
-                        ctx.group_name_hashes,
-                        pattern.group_name_hash,
-                    ) {
-                        valid += 1;
-                    }
-                }
-            }
+            let active = i < action.signature_count;
+
+            // Get signature
+            let raw_sig = action.signatures[i];
+            let sig = sig64_from_eth(raw_sig);
+
+            // Get pubkey
+            let px = ctx.signer_pubkeys_x[i];
+            let py = ctx.signer_pubkeys_y[i];
+
+            // Verify signature with pubkey
+            let ok = verify_signature(px, py, sig, digest);
+
+            // Only accrue when both active and ok
+            let contributes = active & ok;
+
+            // Derive address from public key
+            let signer_address = eth_addr_from_pubkey(px, py);
+            let member = is_member(
+                signer_address,
+                ctx.groups,
+                ctx.group_name_hashes,
+                pattern.group_name_hash,
+            );
+
+            // Obtain contribution iif contributes * member = 1
+            let value_contribution = contributes & member;
+            valid += if value_contribution { 1 } else { 0 };
         }
+
+        // Only valid if enough members
         res = valid >= (pattern.threshold as u32);
     }
 
