@@ -2,7 +2,7 @@
 
 ZKGuard is a high-assurance security system designed to enforce customizable policies on blockchain transactions before they are executed. It uses the power of zero-knowledge proofs (ZKPs) to validate that a user's action complies with a predefined security policy, without revealing the policy itself.
 
-This provides a powerful combination of security, privacy, and efficiency, making it ideal for securing DAO treasuries, smart contract wallets, and other critical on-chain infrastructure.
+This provides a powerful combination of security and privacy, making it ideal for securing DAO treasuries, smart contract wallets, and other critical on-chain infrastructure.
 
 ## Core Concept: The Allow-List Model
 
@@ -28,12 +28,19 @@ By combining these two proofs into a single ZKP, ZKGuard provides a powerful gua
 
 ## Implementations
 
-This repository contains two parallel implementations of the ZKGuard engine, demonstrating different ZK technologies:
+This repository contains three parallel implementations of the ZKGuard engine, demonstrating different ZK technologies:
 
 ### 🔵 `gnark` (Go) - zk-SNARKs
 This implementation uses the `gnark` library to build a **Groth16 zk-SNARK circuit**. It is highly optimized for performance and generates extremely small proofs, making it ideal for on-chain verification where gas costs are a primary concern.
 
 ➡️ **[See the `gnark` README for technical details and instructions.](./gnark/README.md)**
+
+### ⚫️ `noir` (Noir Language) - zk-SNARKs
+This implementation uses the `noir` language and the `bb.js` backend to build a **Plonk zk-SNARK circuit**. Noir is a domain-specific language for creating and verifying zero-knowledge proofs, designed for ease of use and developer productivity.
+
+➡️ **[See the `noir` README for technical details and instructions.](./noir/README.md)**
+
+
 
 ### 🔴 `risc0` (Rust) - zkVM
 This implementation uses the **Risc0 zkVM**, a general-purpose zero-knowledge virtual machine. Instead of designing a circuit, we write standard Rust code that executes inside the zkVM to perform the validation. This approach offers greater flexibility for writing highly complex and expressive policies.
