@@ -80,20 +80,47 @@ func checkCircuitLogic(assignment ZKGuardCircuit) {
 }
 
 // RunAllExamples executes all scenarios sequentially.
-func RunAllExamples(sk *ecdsa.PrivateKey, governanceSigners []*ecdsa.PrivateKey, daoAddr [20]byte, stablecoin, teamWallet1, dex, lendingPool, weth []byte, groups [MAX_GROUPS][MAX_ADDRS_PER_SET]frontend.Variable, groupSizes [MAX_GROUPS]frontend.Variable, allowLists [MAX_ALLOWLISTS][MAX_ADDRS_PER_SET]frontend.Variable, allowSizes [MAX_ALLOWLISTS]frontend.Variable, prove bool) {
+func RunAllExamples(
+	sk *ecdsa.PrivateKey,
+	governanceSigners []*ecdsa.PrivateKey,
+	daoAddr [20]byte,
+	stablecoin,
+	teamWallet1,
+	dex,
+	lendingPool,
+	weth []byte,
+	groups [MAX_GROUPS][MAX_ADDRS_PER_SET]frontend.Variable,
+	groupSizes [MAX_GROUPS]frontend.Variable,
+	groupHash [32]byte,
+	allowLists [MAX_ALLOWLISTS][MAX_ADDRS_PER_SET]frontend.Variable,
+	allowSizes [MAX_ALLOWLISTS]frontend.Variable,
+	allowHash [32]byte,
+	prove bool,
+) {
 	fmt.Println("--- Running All ZKGuard DAO Policy Examples ---")
-	runContributorPayments(sk, daoAddr, stablecoin, teamWallet1, groups, groupSizes, allowLists, allowSizes, prove)
-	runDeFiSwaps(sk, daoAddr, dex, groups, groupSizes, allowLists, allowSizes, prove)
-	runSupplyLending(sk, daoAddr, weth, lendingPool, groups, groupSizes, allowLists, allowSizes, prove)
-	runAmountLimits(sk, daoAddr, stablecoin, teamWallet1, groups, groupSizes, allowLists, allowSizes, prove)
-	runFunctionLevelControls(sk, daoAddr, dex, groups, groupSizes, allowLists, allowSizes, prove)
-	runInteractDapps(sk, daoAddr, lendingPool, groups, groupSizes, allowLists, allowSizes, prove)
-	runAdvancedSignerPolicies(governanceSigners, daoAddr, dex, groups, groupSizes, allowLists, allowSizes, prove)
+	runContributorPayments(sk, daoAddr, stablecoin, teamWallet1, groups, groupSizes, groupHash, allowLists, allowSizes, allowHash, prove)
+	runDeFiSwaps(sk, daoAddr, dex, groups, groupSizes, groupHash, allowLists, allowSizes, allowHash, prove)
+	runSupplyLending(sk, daoAddr, weth, lendingPool, groups, groupSizes, groupHash, allowLists, allowSizes, allowHash, prove)
+	runAmountLimits(sk, daoAddr, stablecoin, teamWallet1, groups, groupSizes, groupHash, allowLists, allowSizes, allowHash, prove)
+	runFunctionLevelControls(sk, daoAddr, dex, groups, groupSizes, groupHash, allowLists, allowSizes, allowHash, prove)
+	runInteractDapps(sk, daoAddr, lendingPool, groups, groupSizes, groupHash, allowLists, allowSizes, allowHash, prove)
+	runAdvancedSignerPolicies(governanceSigners, daoAddr, dex, groups, groupSizes, groupHash, allowLists, allowSizes, allowHash, prove)
 }
 
 // --- Individual Scenario Functions (updated to call execute) ---
 
-func runContributorPayments(sk *ecdsa.PrivateKey, daoAddr [20]byte, stablecoin, teamWallet1 []byte, groups [MAX_GROUPS][MAX_ADDRS_PER_SET]frontend.Variable, groupSizes [MAX_GROUPS]frontend.Variable, allowLists [MAX_ALLOWLISTS][MAX_ADDRS_PER_SET]frontend.Variable, allowSizes [MAX_ALLOWLISTS]frontend.Variable, prove bool) {
+func runContributorPayments(
+	sk *ecdsa.PrivateKey,
+	daoAddr [20]byte,
+	stablecoin,
+	teamWallet1 []byte,
+	groups [MAX_GROUPS][MAX_ADDRS_PER_SET]frontend.Variable,
+	groupSizes [MAX_GROUPS]frontend.Variable,
+	groupHash [32]byte,
+	allowLists [MAX_ALLOWLISTS][MAX_ADDRS_PER_SET]frontend.Variable,
+	allowSizes [MAX_ALLOWLISTS]frontend.Variable,
+	allowHash [32]byte,
+	prove bool) {
 	fmt.Println("\n▶ Running Example: Contributor Payments")
 	policyLines := []PolicyLine{{ID: 1, TxType: TT_TRANSFER, DestinationTag: DP_GROUP, DestinationIdx: 0, SignerTag: SP_EXACT, SignerAddr: new(big.Int).SetBytes(daoAddr[:]), AssetTag: AP_EXACT, AssetAddr: new(big.Int).SetBytes(stablecoin), AmountMax: new(big.Int), Action: ACT_ALLOW}}
 	amount := new(big.Int).SetUint64(5000 * 1e6)
@@ -104,18 +131,37 @@ func runContributorPayments(sk *ecdsa.PrivateKey, daoAddr [20]byte, stablecoin, 
 	calldataBuf.Write(bytes.Repeat([]byte{0}, 12))
 	calldataBuf.Write(teamWallet1)
 	calldataBuf.Write(amountBytes)
-	assignment := buildWitness(policyLines, 0, new(big.Int).SetBytes(stablecoin), new(big.Int), calldataBuf.Bytes(), []*ecdsa.PrivateKey{sk}, groups, groupSizes, allowLists, allowSizes)
+	assignment := buildWitness(policyLines, 0, new(big.Int).SetBytes(stablecoin), new(big.Int), calldataBuf.Bytes(), []*ecdsa.PrivateKey{sk}, groups, groupSizes, groupHash, allowLists, allowSizes, allowHash)
 	execute(assignment, prove)
 }
 
-func runDeFiSwaps(sk *ecdsa.PrivateKey, daoAddr [20]byte, dex []byte, groups [MAX_GROUPS][MAX_ADDRS_PER_SET]frontend.Variable, groupSizes [MAX_GROUPS]frontend.Variable, allowLists [MAX_ALLOWLISTS][MAX_ADDRS_PER_SET]frontend.Variable, allowSizes [MAX_ALLOWLISTS]frontend.Variable, prove bool) {
+func runDeFiSwaps(sk *ecdsa.PrivateKey,
+	daoAddr [20]byte,
+	dex []byte,
+	groups [MAX_GROUPS][MAX_ADDRS_PER_SET]frontend.Variable,
+	groupSizes [MAX_GROUPS]frontend.Variable,
+	groupHash [32]byte,
+	allowLists [MAX_ALLOWLISTS][MAX_ADDRS_PER_SET]frontend.Variable,
+	allowSizes [MAX_ALLOWLISTS]frontend.Variable,
+	allowHash [32]byte,
+	prove bool) {
 	fmt.Println("\n▶ Running Example: DeFi Swaps")
 	policyLines := []PolicyLine{{ID: 2, TxType: TT_CONTRACTCALL, DestinationTag: DP_ALLOWLIST, DestinationIdx: 0, SignerTag: SP_EXACT, SignerAddr: new(big.Int).SetBytes(daoAddr[:]), AssetTag: AP_ANY, AmountMax: new(big.Int), Action: ACT_ALLOW}}
-	assignment := buildWitness(policyLines, 0, new(big.Int).SetBytes(dex), new(big.Int).SetUint64(1e18), []byte{}, []*ecdsa.PrivateKey{sk}, groups, groupSizes, allowLists, allowSizes)
+	assignment := buildWitness(policyLines, 0, new(big.Int).SetBytes(dex), new(big.Int).SetUint64(1e18), []byte{}, []*ecdsa.PrivateKey{sk}, groups, groupSizes, groupHash, allowLists, allowSizes, allowHash)
 	execute(assignment, prove)
 }
 
-func runSupplyLending(sk *ecdsa.PrivateKey, daoAddr [20]byte, weth, lendingPool []byte, groups [MAX_GROUPS][MAX_ADDRS_PER_SET]frontend.Variable, groupSizes [MAX_GROUPS]frontend.Variable, allowLists [MAX_ALLOWLISTS][MAX_ADDRS_PER_SET]frontend.Variable, allowSizes [MAX_ALLOWLISTS]frontend.Variable, prove bool) {
+func runSupplyLending(sk *ecdsa.PrivateKey,
+	daoAddr [20]byte,
+	weth,
+	lendingPool []byte,
+	groups [MAX_GROUPS][MAX_ADDRS_PER_SET]frontend.Variable,
+	groupSizes [MAX_GROUPS]frontend.Variable,
+	groupHash [32]byte,
+	allowLists [MAX_ALLOWLISTS][MAX_ADDRS_PER_SET]frontend.Variable,
+	allowSizes [MAX_ALLOWLISTS]frontend.Variable,
+	allowHash [32]byte,
+	prove bool) {
 	fmt.Println("\n▶ Running Example: Supply Lending")
 	policyLines := []PolicyLine{{ID: 3, TxType: TT_TRANSFER, DestinationTag: DP_ALLOWLIST, DestinationIdx: 1, SignerTag: SP_EXACT, SignerAddr: new(big.Int).SetBytes(daoAddr[:]), AssetTag: AP_EXACT, AssetAddr: new(big.Int).SetBytes(weth), AmountMax: new(big.Int), Action: ACT_ALLOW}}
 	amount := new(big.Int).SetUint64(1e18)
@@ -126,11 +172,21 @@ func runSupplyLending(sk *ecdsa.PrivateKey, daoAddr [20]byte, weth, lendingPool 
 	calldataBuf.Write(bytes.Repeat([]byte{0}, 12))
 	calldataBuf.Write(lendingPool)
 	calldataBuf.Write(amountBytes)
-	assignment := buildWitness(policyLines, 0, new(big.Int).SetBytes(weth), new(big.Int), calldataBuf.Bytes(), []*ecdsa.PrivateKey{sk}, groups, groupSizes, allowLists, allowSizes)
+	assignment := buildWitness(policyLines, 0, new(big.Int).SetBytes(weth), new(big.Int), calldataBuf.Bytes(), []*ecdsa.PrivateKey{sk}, groups, groupSizes, groupHash, allowLists, allowSizes, allowHash)
 	execute(assignment, prove)
 }
 
-func runAmountLimits(sk *ecdsa.PrivateKey, daoAddr [20]byte, stablecoin, teamWallet1 []byte, groups [MAX_GROUPS][MAX_ADDRS_PER_SET]frontend.Variable, groupSizes [MAX_GROUPS]frontend.Variable, allowLists [MAX_ALLOWLISTS][MAX_ADDRS_PER_SET]frontend.Variable, allowSizes [MAX_ALLOWLISTS]frontend.Variable, prove bool) {
+func runAmountLimits(sk *ecdsa.PrivateKey,
+	daoAddr [20]byte,
+	stablecoin,
+	teamWallet1 []byte,
+	groups [MAX_GROUPS][MAX_ADDRS_PER_SET]frontend.Variable,
+	groupSizes [MAX_GROUPS]frontend.Variable,
+	groupHash [32]byte,
+	allowLists [MAX_ALLOWLISTS][MAX_ADDRS_PER_SET]frontend.Variable,
+	allowSizes [MAX_ALLOWLISTS]frontend.Variable,
+	allowHash [32]byte,
+	prove bool) {
 	fmt.Println("\n▶ Running Example: Amount Limits (Valid)")
 	policyLines := []PolicyLine{{ID: 4, TxType: TT_TRANSFER, DestinationTag: DP_GROUP, DestinationIdx: 0, SignerTag: SP_EXACT, SignerAddr: new(big.Int).SetBytes(daoAddr[:]), AssetTag: AP_EXACT, AssetAddr: new(big.Int).SetBytes(stablecoin), AmountMax: new(big.Int).SetUint64(10000 * 1e6), Action: ACT_ALLOW}}
 	amount := new(big.Int).SetUint64(9000 * 1e6)
@@ -141,29 +197,56 @@ func runAmountLimits(sk *ecdsa.PrivateKey, daoAddr [20]byte, stablecoin, teamWal
 	calldataBuf.Write(bytes.Repeat([]byte{0}, 12))
 	calldataBuf.Write(teamWallet1)
 	calldataBuf.Write(amountBytes)
-	assignment := buildWitness(policyLines, 0, new(big.Int).SetBytes(stablecoin), new(big.Int), calldataBuf.Bytes(), []*ecdsa.PrivateKey{sk}, groups, groupSizes, allowLists, allowSizes)
+	assignment := buildWitness(policyLines, 0, new(big.Int).SetBytes(stablecoin), new(big.Int), calldataBuf.Bytes(), []*ecdsa.PrivateKey{sk}, groups, groupSizes, groupHash, allowLists, allowSizes, allowHash)
 	execute(assignment, prove)
 }
 
-func runFunctionLevelControls(sk *ecdsa.PrivateKey, daoAddr [20]byte, dex []byte, groups [MAX_GROUPS][MAX_ADDRS_PER_SET]frontend.Variable, groupSizes [MAX_GROUPS]frontend.Variable, allowLists [MAX_ALLOWLISTS][MAX_ADDRS_PER_SET]frontend.Variable, allowSizes [MAX_ALLOWLISTS]frontend.Variable, prove bool) {
+func runFunctionLevelControls(sk *ecdsa.PrivateKey,
+	daoAddr [20]byte,
+	dex []byte,
+	groups [MAX_GROUPS][MAX_ADDRS_PER_SET]frontend.Variable,
+	groupSizes [MAX_GROUPS]frontend.Variable,
+	groupHash [32]byte,
+	allowLists [MAX_ALLOWLISTS][MAX_ADDRS_PER_SET]frontend.Variable,
+	allowSizes [MAX_ALLOWLISTS]frontend.Variable,
+	allowHash [32]byte,
+	prove bool) {
 	fmt.Println("\n▶ Running Example: Function-Level Controls (Valid)")
 	swapSelector, _ := hex.DecodeString("7ff36ab5")
 	policyLines := []PolicyLine{{ID: 5, TxType: TT_CONTRACTCALL, DestinationTag: DP_ALLOWLIST, DestinationIdx: 0, SignerTag: SP_EXACT, SignerAddr: new(big.Int).SetBytes(daoAddr[:]), AssetTag: AP_ANY, AmountMax: new(big.Int), FunctionSelector: swapSelector, Action: ACT_ALLOW}}
-	assignment := buildWitness(policyLines, 0, new(big.Int).SetBytes(dex), new(big.Int).SetUint64(1e18), swapSelector, []*ecdsa.PrivateKey{sk}, groups, groupSizes, allowLists, allowSizes)
+	assignment := buildWitness(policyLines, 0, new(big.Int).SetBytes(dex), new(big.Int).SetUint64(1e18), swapSelector, []*ecdsa.PrivateKey{sk}, groups, groupSizes, groupHash, allowLists, allowSizes, allowHash)
 	execute(assignment, prove)
 }
 
-func runInteractDapps(sk *ecdsa.PrivateKey, daoAddr [20]byte, lendingPool []byte, groups [MAX_GROUPS][MAX_ADDRS_PER_SET]frontend.Variable, groupSizes [MAX_GROUPS]frontend.Variable, allowLists [MAX_ALLOWLISTS][MAX_ADDRS_PER_SET]frontend.Variable, allowSizes [MAX_ALLOWLISTS]frontend.Variable, prove bool) {
+func runInteractDapps(sk *ecdsa.PrivateKey,
+	daoAddr [20]byte,
+	lendingPool []byte,
+	groups [MAX_GROUPS][MAX_ADDRS_PER_SET]frontend.Variable,
+	groupSizes [MAX_GROUPS]frontend.Variable,
+	groupHash [32]byte,
+	allowLists [MAX_ALLOWLISTS][MAX_ADDRS_PER_SET]frontend.Variable,
+	allowSizes [MAX_ALLOWLISTS]frontend.Variable,
+	allowHash [32]byte,
+	prove bool) {
 	fmt.Println("\n▶ Running Example: Interact with dApps")
 	policyLines := []PolicyLine{{ID: 6, TxType: TT_CONTRACTCALL, DestinationTag: DP_ALLOWLIST, DestinationIdx: 1, SignerTag: SP_EXACT, SignerAddr: new(big.Int).SetBytes(daoAddr[:]), AssetTag: AP_ANY, AmountMax: new(big.Int), FunctionSelector: nil, Action: ACT_ALLOW}}
 	to := new(big.Int).SetBytes(lendingPool)
 	value := new(big.Int) // value: 0
 	calldata := []byte{0x12, 0x34, 0x56, 0x78}
-	assignment := buildWitness(policyLines, 0, to, value, calldata, []*ecdsa.PrivateKey{sk}, groups, groupSizes, allowLists, allowSizes)
+	assignment := buildWitness(policyLines, 0, to, value, calldata, []*ecdsa.PrivateKey{sk}, groups, groupSizes, groupHash, allowLists, allowSizes, allowHash)
 	execute(assignment, prove)
 }
 
-func runAdvancedSignerPolicies(governanceSigners []*ecdsa.PrivateKey, daoAddr [20]byte, dex []byte, groups [MAX_GROUPS][MAX_ADDRS_PER_SET]frontend.Variable, groupSizes [MAX_GROUPS]frontend.Variable, allowLists [MAX_ALLOWLISTS][MAX_ADDRS_PER_SET]frontend.Variable, allowSizes [MAX_ALLOWLISTS]frontend.Variable, prove bool) {
+func runAdvancedSignerPolicies(governanceSigners []*ecdsa.PrivateKey,
+	daoAddr [20]byte,
+	dex []byte,
+	groups [MAX_GROUPS][MAX_ADDRS_PER_SET]frontend.Variable,
+	groupSizes [MAX_GROUPS]frontend.Variable,
+	groupHash [32]byte,
+	allowLists [MAX_ALLOWLISTS][MAX_ADDRS_PER_SET]frontend.Variable,
+	allowSizes [MAX_ALLOWLISTS]frontend.Variable,
+	allowHash [32]byte,
+	prove bool) {
 	fmt.Println("\n▶ Running Example: Advanced Signer Policies (2-of-3)")
 	policyLines := []PolicyLine{
 		{
@@ -188,6 +271,6 @@ func runAdvancedSignerPolicies(governanceSigners []*ecdsa.PrivateKey, daoAddr [2
 	value := new(big.Int).SetUint64(10e18) // 10 ETH
 	calldata := []byte{0xaa, 0xbb, 0xcc, 0xdd}
 
-	assignment := buildWitness(policyLines, 0, to, value, calldata, signers, groups, groupSizes, allowLists, allowSizes)
+	assignment := buildWitness(policyLines, 0, to, value, calldata, signers, groups, groupSizes, groupHash, allowLists, allowSizes, allowHash)
 	execute(assignment, prove)
 }

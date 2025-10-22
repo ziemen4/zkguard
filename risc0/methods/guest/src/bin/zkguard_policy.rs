@@ -85,7 +85,7 @@ fn verify_merkle_proof(root: &[u8], leaf_bytes: &[u8], proof: &MerklePath) -> bo
         proof.siblings.len()
     ));
 
-    // CHANGE: Use the cleaner one-shot digest from the `sha2` crate.
+    // First, hash the leaf node
     let mut computed_hash: [u8; 32] = Sha256::digest(leaf_bytes).into();
 
     env::log(&format!(

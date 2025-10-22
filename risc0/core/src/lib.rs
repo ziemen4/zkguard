@@ -91,9 +91,6 @@ pub fn hash_policy_line_for_merkle_tree(pl: &PolicyLine) -> [u8; 32] {
         .serialize(pl)
         .expect("Failed to bincode serialize PolicyLine for hashing");
 
-    // Print the policy bytes for debugging.
-    println!("PolicyLine bytes: {:?}", policy_line_bytes);
-
     // Hash the resulting bytes using the standard `sha2` crate.
     sha2::Sha256::digest(&policy_line_bytes).into()
 }

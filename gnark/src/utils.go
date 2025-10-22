@@ -150,13 +150,21 @@ func padSelector(selector []byte) [4]frontend.Variable {
 }
 
 // buildWitness constructs the full circuit witness for a given scenario.
-func buildWitness(policyLines []PolicyLine, activePolicyIndex int, to *big.Int, value *big.Int, calldata []byte, signerKeys []*ecdsa.PrivateKey, groups [MAX_GROUPS][MAX_ADDRS_PER_SET]frontend.Variable, groupSizes [MAX_GROUPS]frontend.Variable, allowLists [MAX_ALLOWLISTS][MAX_ADDRS_PER_SET]frontend.Variable, allowSizes [MAX_ALLOWLISTS]frontend.Variable) ZKGuardCircuit {
+func buildWitness(policyLines []PolicyLine,
+	activePolicyIndex int,
+	to *big.Int,
+	value *big.Int,
+	calldata []byte,
+	signerKeys []*ecdsa.PrivateKey,
+	groups [MAX_GROUPS][MAX_ADDRS_PER_SET]frontend.Variable,
+	groupSizes [MAX_GROUPS]frontend.Variable,
+	groupHash [32]byte,
+	allowLists [MAX_ALLOWLISTS][MAX_ADDRS_PER_SET]frontend.Variable,
+	allowSizes [MAX_ALLOWLISTS]frontend.Variable,
+	allowHash [32]byte,
+) ZKGuardCircuit {
 	paddedCalldata := make([]byte, MAX_DATA_BYTES)
 	copy(paddedCalldata, calldata)
-
-	finalCallHash := sha256.Sum256(paddedCalldata)
-	finalGroupsHash := sha256.Sum256([]byte{})
-	finalAllowHash := sha256.Sum256([]byte{})
 
 	toForSigning := to.Bytes()
 	toPadded := make([]byte, 20)
@@ -165,6 +173,9 @@ func buildWitness(policyLines []PolicyLine, activePolicyIndex int, to *big.Int, 
 	value.FillBytes(valueForSigning)
 	messageBytes := bytes.Join([][]byte{toPadded, valueForSigning, paddedCalldata}, nil)
 	messageToSign := eth_crypto.Keccak256(messageBytes)
+
+	// The final call hash is what gets verified in the circuit.
+	finalCallHash := eth_crypto.Keccak256(messageBytes)
 
 	// --- Multi-Signature Processing ---
 	if len(signerKeys) > MAX_SIGNATURES {
@@ -255,8 +266,8 @@ func buildWitness(policyLines []PolicyLine, activePolicyIndex int, to *big.Int, 
 	return ZKGuardCircuit{
 		CallHash:         to32FrontendVariable(finalCallHash[:]),
 		PolicyMerkleRoot: to32FrontendVariable(merkleRoot),
-		GroupsHash:       to32FrontendVariable(finalGroupsHash[:]),
-		AllowHash:        to32FrontendVariable(finalAllowHash[:]),
+		GroupsHash:       to32FrontendVariable(groupHash[:]),
+		AllowHash:        to32FrontendVariable(allowHash[:]),
 		To:               to,
 		Value:            value,
 		Data:             toDataArray(calldata),

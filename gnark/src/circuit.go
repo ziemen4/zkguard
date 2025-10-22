@@ -310,6 +310,13 @@ func selectSet(
 	return selectedSet, selectedSize
 }
 
+// isEqualHash checks if two 32-byte hashes are equal. Raises an assertion failure if not equal.
+func isEqualHash(api frontend.API, hashA []uints.U8, hashB [32]frontend.Variable) {
+	for i := 0; i < 32; i++ {
+		api.AssertIsEqual(hashA[i].Val, hashB[i])
+	}
+}
+
 // -----------------------------------------------------------------------------
 //
 //	Main Circuit Logic
@@ -385,7 +392,7 @@ func (c *ZKGuardCircuit) Define(api frontend.API) error {
 		api.AssertIsEqual(computedHashBytes[i].Val, c.PolicyMerkleRoot[i])
 	}
 
-	// --- 2. Message Hash for Signature Verification ---
+	// --- 2. Hash Verifications ---
 	// This section computes the message hash that the user(s) must have signed.
 	// For Ethereum compatibility, this must use Keccak256.
 	hMsg, _ := keccak.NewLegacyKeccak256(api)
@@ -407,6 +414,73 @@ func (c *ZKGuardCircuit) Define(api frontend.API) error {
 	hMsg.Write(msgForHashBytes)
 	// This is the 32-byte hash that was signed.
 	msgHash := hMsg.Sum()
+
+	// Check that msgHash is equal to c.CallHash
+	isEqualHash(api, msgHash, c.CallHash)
+
+	// Hash the Groups and AllowLists to verify their commitments.
+	// This can use Sha256 as we don't require Ethereum compatibility here.
+	hGroups, _ := sha2.New(api)
+	for i := 0; i < MAX_GROUPS; i++ {
+		for j := 0; j < MAX_ADDRS_PER_SET; j++ {
+			// Create a slice to hold the 20 bytes for this address
+			addressBytes := make([]uints.U8, 20)
+
+			// 1. Get 160 bits (LSB-first)
+			bits := api.ToBinary(c.Groups[i][j], 160)
+
+			// 2. Loop 20 times (for 20 bytes)
+			for k := 0; k < 20; k++ {
+				// 3. Get bits for the k-th byte in Big-Endian order.
+				//    k=0  -> bits[152:160] (MSB)
+				//    k=19 -> bits[0:8] (LSB)
+				byteBits := bits[(19-k)*8 : (20-k)*8]
+
+				// 4. Pack bits into a frontend.Variable (byte)
+				byteVal := api.FromBinary(byteBits...)
+
+				// 5. Convert to U8 and store in big-endian order
+				addressBytes[k] = uapi.ByteValueOf(byteVal)
+			}
+
+			// 6. Write the 20 big-endian bytes for this address
+			hGroups.Write(addressBytes)
+		}
+		hGroups.Write([]uints.U8{uapi.ByteValueOf(c.GroupSizes[i])})
+	}
+	groupsHashBytes := hGroups.Sum()
+	isEqualHash(api, groupsHashBytes, c.GroupsHash)
+
+	hAllow, _ := sha2.New(api)
+	for i := 0; i < MAX_ALLOWLISTS; i++ {
+		for j := 0; j < MAX_ADDRS_PER_SET; j++ {
+			// Create a slice to hold the 20 bytes for this address
+			addressBytes := make([]uints.U8, 20)
+
+			// 1. Get 160 bits (LSB-first)
+			bits := api.ToBinary(c.AllowLists[i][j], 160)
+
+			// 2. Loop 20 times (for 20 bytes)
+			for k := 0; k < 20; k++ {
+				// 3. Get bits for the k-th byte in Big-Endian order.
+				//    k=0  -> bits[152:160] (MSB)
+				//    k=19 -> bits[0:8] (LSB)
+				byteBits := bits[(19-k)*8 : (20-k)*8]
+
+				// 4. Pack bits into a frontend.Variable (byte)
+				byteVal := api.FromBinary(byteBits...)
+
+				// 5. Convert to U8 and store in big-endian order
+				addressBytes[k] = uapi.ByteValueOf(byteVal)
+			}
+
+			// 6. Write the 20 big-endian bytes for this address
+			hAllow.Write(addressBytes)
+		}
+		hAllow.Write([]uints.U8{uapi.ByteValueOf(c.AllowSizes[i])})
+	}
+	allowHashBytes := hAllow.Sum()
+	isEqualHash(api, allowHashBytes, c.AllowHash)
 
 	// --- 3. Multi-Signature Verification Loop ---
 	// This section verifies all provided signatures against the message hash and recovers the signer addresses.
@@ -481,7 +555,7 @@ func (c *ZKGuardCircuit) Define(api frontend.API) error {
 	// We use the `selectSet` helper to do this safely.
 	signerGroup, signerGroupSize := selectSet(api, line.SignerGroupIdx, c.Groups[:], c.GroupSizes[:], MAX_GROUPS)
 
-	// Get the correct destination group/list based on the policy's DestinationIdx.
+	// Get the correct destination garoup/list based on the policy's DestinationIdx.
 	destGroup, destGroupSize := selectSet(api, line.DestinationIdx, c.Groups[:], c.GroupSizes[:], MAX_GROUPS)
 	destList, destListSize := selectSet(api, line.DestinationIdx, c.AllowLists[:], c.AllowSizes[:], MAX_ALLOWLISTS)
 
