@@ -33,6 +33,9 @@ func getExampleAssignment(exampleName string) (ZKGuardCircuit, error) {
 	govKey1, _ := eth_crypto.HexToECDSA("d2b651f6682d36d83a15039a831e5a619b48f9a3f25603f7e346f3be8f45c713")
 	govKey2, _ := eth_crypto.HexToECDSA("2286b7bf48a97957770a5d2f8e1329128f83c07a0d4b851b238116541f714930")
 	govKey3, _ := eth_crypto.HexToECDSA("a853651333333333333333333333333333333333333333333333333333333333")
+	govAddr1 := eth_crypto.PubkeyToAddress(govKey1.PublicKey)
+	govAddr2 := eth_crypto.PubkeyToAddress(govKey2.PublicKey)
+	govAddr3 := eth_crypto.PubkeyToAddress(govKey3.PublicKey)
 	governanceSigners := []*ecdsa.PrivateKey{govKey1, govKey2, govKey3}
 
 	teamWallet1, _ := hex.DecodeString("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
@@ -45,6 +48,38 @@ func getExampleAssignment(exampleName string) (ZKGuardCircuit, error) {
 	teamWalletsSet := newAddressSet(teamWallet1, teamWallet2)
 	governanceSignersSet := newAddressSet(eth_crypto.PubkeyToAddress(govKey1.PublicKey).Bytes(), eth_crypto.PubkeyToAddress(govKey2.PublicKey).Bytes(), eth_crypto.PubkeyToAddress(govKey3.PublicKey).Bytes())
 
+	// Create group and allowlist hashes.
+	var groupSetSizes [MAX_GROUPS]byte
+	groupSetSizes[0] = 2 // teamWallet group
+	groupSetSizes[1] = 3 // governance group
+
+	var groupAddressSet [MAX_GROUPS][MAX_ADDRS_PER_SET]big.Int
+	groupAddressSet[0] = newAddressSetBigInt(teamWallet1, teamWallet2)
+	groupAddressSet[1] = newAddressSetBigInt(govAddr1.Bytes(), govAddr2.Bytes(), govAddr3.Bytes())
+
+	emptySet := newAddressSetBigInt()
+	for i := 2; i < MAX_GROUPS; i++ {
+		groupAddressSet[i] = emptySet
+	}
+
+	var groupHash = AddressSetHash(groupSetSizes, groupAddressSet)
+
+	// Implement obtention of allowlist hash as a byte array.
+	var allowSetSizes [MAX_ALLOWLISTS]byte
+	allowSetSizes[0] = 1 // approvedDEXs
+	allowSetSizes[1] = 1 // approvedLendingProtocols
+
+	var allowAddressSet [MAX_ALLOWLISTS][MAX_ADDRS_PER_SET]big.Int
+	allowAddressSet[0] = newAddressSetBigInt(dex)
+	allowAddressSet[1] = newAddressSetBigInt(lendingPool)
+
+	for i := 2; i < MAX_ALLOWLISTS; i++ {
+		allowAddressSet[i] = emptySet
+	}
+
+	var allowHash = AddressSetHash(allowSetSizes, allowAddressSet)
+
+	// Frontend parsing of Groups and AllowLists.
 	var groups [MAX_GROUPS][MAX_ADDRS_PER_SET]frontend.Variable
 	groups[0] = teamWalletsSet
 	groups[1] = governanceSignersSet
@@ -148,7 +183,7 @@ func getExampleAssignment(exampleName string) (ZKGuardCircuit, error) {
 		return ZKGuardCircuit{}, fmt.Errorf("unknown example name: %s", exampleName)
 	}
 
-	return buildWitness(policyLines, 0, to, value, calldata, signers, groups, groupSizes, allowLists, allowSizes), nil
+	return buildWitness(policyLines, 0, to, value, calldata, signers, groups, groupSizes, groupHash, allowLists, allowSizes, allowHash), nil
 }
 
 func BenchmarkZKGuard(b *testing.B) {
