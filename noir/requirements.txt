@@ -1,2 +1,3 @@
 toml
 eth-hash
+coincurve
