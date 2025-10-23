@@ -29,10 +29,10 @@ const (
 	// MAX_ADDRS_PER_SET is the maximum number of addresses that can be stored in a single group or allowlist.
 	MAX_ADDRS_PER_SET = 32
 	// MAX_DATA_BYTES defines the maximum size of the transaction `calldata` byte array.
-	MAX_DATA_BYTES = 128
+	MAX_DATA_BYTES = 256
 	// MAX_SIGNATURES is the maximum number of ECDSA signatures the circuit can verify for a single action.
 	// This is essential for implementing threshold signature policies.
-	MAX_SIGNATURES = 4
+	MAX_SIGNATURES = 5
 )
 
 // transferSelector is the first 4 bytes of the keccak256 hash of the function signature "transfer(address,uint256)".
@@ -577,11 +577,30 @@ func (c *ZKGuardCircuit) Define(api frontend.API) error {
 	// SP_THRESHOLD: Count how many of the recovered signers are members of the specified group.
 	mSignerThresholdTag := eq(api, line.SignerTag, SP_THRESHOLD)
 	validThresholdSigners := frontend.Variable(0)
+	// Loop through all recovered signers to count valid members of the signer group.
 	for i := 0; i < MAX_SIGNATURES; i++ {
-		// `isMember` will be 1 if the signer is in the group, 0 otherwise.
+		// 1. Check if the signer is a valid member of the group
 		isMember := inSet(api, recoveredSigners[i], signerGroup, signerGroupSize)
-		// Accumulate the count.
-		validThresholdSigners = api.Add(validThresholdSigners, isMember)
+
+		// 2. Check if this is a new signer (i.e., not a duplicate from earlier)
+		isNewSigner := frontend.Variable(1) // Assume it's new (1)
+
+		// Loop through all signers *before* this one
+		for j := 0; j < i; j++ {
+			// Check if recoveredSigners[i] == recoveredSigners[j]
+			// api.IsZero(api.Sub(a, b)) is the circuit-safe way to do api.Equal(a, b)
+			isDuplicate := api.IsZero(api.Sub(recoveredSigners[i], recoveredSigners[j]))
+
+			// If it's a duplicate (isDuplicate=1), we must set isNewSigner to 0.
+			// We use api.And to "clear" the flag: isNewSigner = isNewSigner AND (NOT isDuplicate)
+			isNewSigner = api.And(isNewSigner, api.Sub(1, isDuplicate))
+		}
+
+		// 3. The signer only counts if it's both a member AND new
+		isValidAndNew := api.And(isMember, isNewSigner)
+
+		// 4. Accumulate the count
+		validThresholdSigners = api.Add(validThresholdSigners, isValidAndNew)
 	}
 	// The count of valid signers must be greater than or equal to the policy's threshold.
 	thresholdMet := cmp.IsLessOrEqual(api, line.Threshold, validThresholdSigners)

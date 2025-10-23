@@ -9,6 +9,7 @@ use policy::{
 
 // --- Imports for Noir v1.0.0-beta.9 ---
 use dep::keccak256::keccak256;
+use dep::sha256::digest;
 use std::ecdsa_secp256k1::verify_signature;
 // --------------------------------------
 
@@ -24,6 +25,169 @@ pub struct PublicOutputs {
 global TRANSFER_SELECTOR: [u8; 4] = [0xa9, 0x05, 0x9c, 0xbb];
 // Pseudo-address for native ETH.
 global ETH_ASSET: [u8; 20] = [0; 20];
+
+// Maximum Merkle tree depth supported in-circuit.
+// Adjust if your policy tree can exceed this depth.
+global MAX_MERKLE_DEPTH: u32 = 64;
+// Fixed-length serialization size for a PolicyLine leaf preimage.
+// Layout (big-endian for Field values):
+//   - tx_type (Field, 32)
+//   - destination.kind (Field, 32)
+//   - destination.name_hash (Field, 32)
+//   - signer.kind (Field, 32)
+//   - signer.address (20)
+//   - signer.group_name_hash (Field, 32)
+//   - signer.threshold (1)
+//   - asset.kind (Field, 32)
+//   - asset.address (20)
+//   - has_amount_max (1)
+//   - amount_max (Field, 32)
+//   - has_function_selector (1)
+//   - function_selector (4)
+global POLICY_LEAF_LEN: u32 = 271;
+
+// Fixed-size Merkle path input for Noir.
+pub struct MerklePathInput {
+    // 0-based leaf index from the left
+    leaf_index: u32,
+    // Actual number of siblings in use (<= MAX_MERKLE_DEPTH)
+    depth: u32,
+    // Sibling hashes from bottom to top
+    siblings: [[u8; 32]; MAX_MERKLE_DEPTH],
+}
+
+// Concatenate two 32-byte hashes into a single 64-byte buffer.
+fn concat_32x2(left: [u8; 32], right: [u8; 32]) -> [u8; 64] {
+    let mut out = [0u8; 64];
+    for i in 0..32 {
+        out[i] = left[i];
+    }
+    for i in 0..32 {
+        out[32 + i] = right[i];
+    }
+    out
+}
+
+fn bool_to_byte(b: bool) -> u8 {
+    if b {
+        1
+    } else {
+        0
+    }
+}
+
+// Serialize a PolicyLine into a fixed-length byte array (POLICY_LEAF_LEN),
+// using big-endian encoding for Field values and fixed widths for all fields.
+fn serialize_policy_line(rule: PolicyLine) -> [u8; POLICY_LEAF_LEN] {
+    let mut out = [0u8; POLICY_LEAF_LEN];
+    let mut p: u32 = 0;
+
+    // tx_type (Field -> 32 bytes BE)
+    let tx_be: [u8; 32] = rule.tx_type.to_be_bytes::<32>();
+    for i in 0..32 {
+        out[p] = tx_be[i];
+        p += 1;
+    }
+
+    // destination.kind (Field -> 32)
+    let dkind_be: [u8; 32] = rule.destination.kind.to_be_bytes::<32>();
+    for i in 0..32 {
+        out[p] = dkind_be[i];
+        p += 1;
+    }
+
+    // destination.name_hash (Field -> 32)
+    let dname_be: [u8; 32] = rule.destination.name_hash.to_be_bytes::<32>();
+    for i in 0..32 {
+        out[p] = dname_be[i];
+        p += 1;
+    }
+
+    // signer.kind (Field -> 32)
+    let skid_be: [u8; 32] = rule.signer.kind.to_be_bytes::<32>();
+    for i in 0..32 {
+        out[p] = skid_be[i];
+        p += 1;
+    }
+
+    // signer.address (20)
+    for i in 0..20 {
+        out[p] = rule.signer.address[i];
+        p += 1;
+    }
+
+    // signer.group_name_hash (Field -> 32)
+    let sgrp_be: [u8; 32] = rule.signer.group_name_hash.to_be_bytes::<32>();
+    for i in 0..32 {
+        out[p] = sgrp_be[i];
+        p += 1;
+    }
+
+    // signer.threshold (1)
+    out[p] = rule.signer.threshold;
+    p += 1;
+
+    // asset.kind (Field -> 32)
+    let akind_be: [u8; 32] = rule.asset.kind.to_be_bytes::<32>();
+    for i in 0..32 {
+        out[p] = akind_be[i];
+        p += 1;
+    }
+
+    // asset.address (20)
+    for i in 0..20 {
+        out[p] = rule.asset.address[i];
+        p += 1;
+    }
+
+    // has_amount_max (1)
+    out[p] = bool_to_byte(rule.has_amount_max);
+    p += 1;
+
+    // amount_max (Field -> 32)
+    let amt_be: [u8; 32] = rule.amount_max.to_be_bytes::<32>();
+    for i in 0..32 {
+        out[p] = amt_be[i];
+        p += 1;
+    }
+
+    // has_function_selector (1)
+    out[p] = bool_to_byte(rule.has_function_selector);
+    p += 1;
+
+    // function_selector (4)
+    for i in 0..4 {
+        out[p] = rule.function_selector[i];
+        p += 1;
+    }
+
+    // p should equal POLICY_LEAF_LEN at this point
+    out
+}
+
+// Verify inclusion of a leaf (already hashed with SHA-256) in a Merkle root using SHA-256 for internal nodes.
+fn verify_merkle_membership(root: [u8; 32], leaf_hash: [u8; 32], path: MerklePathInput) -> bool {
+    let mut acc = leaf_hash;
+    let mut idx = path.leaf_index;
+
+    // Iterate up to MAX_MERKLE_DEPTH but only use `path.depth` entries
+    for i in 0..MAX_MERKLE_DEPTH {
+        if i < path.depth {
+            let sib = path.siblings[i];
+            // If current index is even, node is left child: hash(acc || sib)
+            // If odd, node is right child: hash(sib || acc)
+            let combined: [u8; 64] = if (idx % 2) == 0u32 {
+                concat_32x2(acc, sib)
+            } else {
+                concat_32x2(sib, acc)
+            };
+            acc = digest(combined);
+            idx = idx / 2;
+        }
+    }
+
+    acc == root
+}
 
 // Minimal verification context (plus pubkeys for each signature slot).
 pub struct VerificationContext {
@@ -291,12 +455,6 @@ fn classify_user_action(action: UserAction) -> (Field, [u8; 20], [u8; 20], Field
     (out_ty, dest, asset, amount)
 }
 
-// Hashes a PolicyLine to create a commitment. This is a simplified serialization.
-fn hash_policy_line(rule: PolicyLine) -> [u8; 32] {
-    let name_hash_be: [u8; 32] = rule.destination.name_hash.to_be_bytes::<32>();
-    keccak256(name_hash_be, 32)
-}
-
 // Hashes a list of members and their corresponding name hashes.
 fn hash_sets(
     members: [[u8; 20]; MAX_SIGNATURES],
@@ -326,7 +484,19 @@ pub fn main(
     rule: PolicyLine,
     user_action: UserAction,
     ctx: VerificationContext,
+    // Merkle membership inputs
+    policy_merkle_root: [u8; 32],
+    policy_merkle_path: MerklePathInput,
 ) -> pub PublicOutputs {
+    // Compute the policy leaf hash inside the circuit from the actual rule being enforced.
+    let leaf_preimage = serialize_policy_line(rule);
+    let computed_leaf_hash: [u8; 32] = digest(leaf_preimage);
+
+    // Ensure the policy rule is a member of the committed Merkle root before any classification.
+    let proof_is_valid =
+        verify_merkle_membership(policy_merkle_root, computed_leaf_hash, policy_merkle_path);
+    assert(proof_is_valid, "merkle-proof-invalid");
+
     let (tx_type, dest_addr, asset_addr, amount) = classify_user_action(user_action);
 
     // (a) type
@@ -359,7 +529,8 @@ pub fn main(
     }
 
     let call_hash = hash_user_action(user_action);
-    let policy_hash = hash_policy_line(rule); // Simplified policy hash
+    // Per Risc0 spec, commit the Merkle root as the policy hash
+    let policy_hash = policy_merkle_root;
     let groups_hash = hash_sets(ctx.groups, ctx.group_name_hashes);
     let allow_hash = hash_sets(ctx.allowlists, ctx.allowlist_name_hashes);
 

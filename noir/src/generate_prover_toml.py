@@ -2,6 +2,7 @@
 import argparse
 import os
 import toml
+import hashlib
 from eth_hash.auto import keccak
 from coincurve import PrivateKey
 
@@ -9,6 +10,7 @@ from coincurve import PrivateKey
 MAX_CALLDATA_SIZE = 256
 MAX_SIGNATURES = 5
 SIGNATURE_SIZE = 65
+MAX_MERKLE_DEPTH = 64  # Must match Noir constant
 
 TX_TYPE_TRANSFER = 0
 TX_TYPE_CONTRACT_CALL = 1
@@ -146,6 +148,74 @@ def to_bytearrays(lst: list[bytes], size: int) -> list[bytes]:
             out.append(b)
     return out
 
+# --- Merkle helpers (No changes to existing behavior; only added outputs) ---
+def _field_bytes32_from_bytes32(b: bytes) -> bytes:
+    """
+    Interpret `b` as big-endian integer, reduce mod BN254, return 32-byte big-endian.
+    Mirrors Field::from_be_bytes and Field::to_be_bytes inside Noir for consistency.
+    """
+    v = int.from_bytes(b, "big") % BN254_SCALAR_MODULUS
+    return v.to_bytes(32, "big")
+
+def _u256_to_be32(n: int) -> bytes:
+    return int(n).to_bytes(32, "big")
+
+def serialize_rule_to_leaf_preimage(rule: dict) -> bytes:
+    """
+    Build the fixed 271-byte preimage according to the Noir circuit layout:
+      tx_type(32) | dest.kind(32) | dest.name_hash(32)
+      | signer.kind(32) | signer.address(20) | signer.group_name_hash(32) | signer.threshold(1)
+      | asset.kind(32) | asset.address(20)
+      | has_amount_max(1) | amount_max(32)
+      | has_function_selector(1) | function_selector(4)
+    All numeric Fields are 32-byte big-endian. Booleans are 1 byte (0/1).
+    """
+    out = bytearray()
+
+    # tx_type
+    out += _u256_to_be32(rule["tx_type"])  # Field -> 32
+
+    # destination
+    dest = rule["destination"]
+    out += _u256_to_be32(dest["kind"])  # Field -> 32
+    out += _field_bytes32_from_bytes32(dest["name_hash_bytes"])  # Field -> 32
+
+    # signer
+    signer = rule["signer"]
+    out += _u256_to_be32(signer["kind"])              # Field -> 32
+    out += signer["address"]                           # [u8;20]
+    out += _field_bytes32_from_bytes32(signer["group_name_hash_bytes"])  # Field -> 32
+    out += bytes([int(signer["threshold"]) & 0xff])   # u8
+
+    # asset
+    asset = rule["asset"]
+    out += _u256_to_be32(asset["kind"])               # Field -> 32
+    out += asset["address"]                            # [u8;20]
+
+    # amount / selector flags and values
+    out += bytes([1 if rule["has_amount_max"] else 0])
+    out += _u256_to_be32(rule["amount_max"])          # Field -> 32
+    out += bytes([1 if rule["has_function_selector"] else 0])
+    fs = rule["function_selector"] or b"\x00" * 4
+    out += fs[:4].ljust(4, b"\x00")                   # [u8;4]
+
+    # Sanity: ensure 271 bytes
+    assert len(out) == 271, f"leaf preimage must be 271 bytes, got {len(out)}"
+    return bytes(out)
+
+def compute_merkle_singleton(rule: dict) -> tuple[bytes, list[bytes], int, int]:
+    """
+    Compute a singleton Merkle tree (one-leaf) for the given rule.
+    Returns: (root32, siblings, depth, leaf_index)
+    depth = 0, leaf_index = 0, siblings = [zero32]*MAX_MERKLE_DEPTH
+    """
+    preimage = serialize_rule_to_leaf_preimage(rule)
+    leaf = hashlib.sha256(preimage).digest()
+    root = leaf
+    zero32 = bytes(32)
+    siblings = [zero32 for _ in range(MAX_MERKLE_DEPTH)]
+    return root, siblings, 0, 0
+
 def write_toml(user_action, rule, ctx, out_path: str):
     # digest was computed in the scenario and stored (not written to TOML)
     digest = user_action["_digest"]
@@ -178,6 +248,9 @@ def write_toml(user_action, rule, ctx, out_path: str):
         pky += [ph_y] * (MAX_SIGNATURES - len(pky))
     pkx = pkx[:MAX_SIGNATURES]
     pky = pky[:MAX_SIGNATURES]
+
+    # Compute Merkle root + path for the provided rule (singleton tree)
+    root, siblings, depth, leaf_index = compute_merkle_singleton(rule)
 
     toml_data = {
         "user_action": {
@@ -217,6 +290,13 @@ def write_toml(user_action, rule, ctx, out_path: str):
             "allowlist_name_hashes": [bytes32_to_field_hex(h) for h in ctx["allowlist_name_hashes"]],
             "signer_pubkeys_x": [format_hex_array(pk, pad_to=32) for pk in pkx],
             "signer_pubkeys_y": [format_hex_array(pk, pad_to=32) for pk in pky],
+        },
+        # New: policy Merkle inputs expected by Noir main
+        "policy_merkle_root": format_hex_array(root, pad_to=32),
+        "policy_merkle_path": {
+            "leaf_index": leaf_index,
+            "depth": depth,
+            "siblings": [format_hex_array(s, pad_to=32) for s in siblings],
         },
     }
 
