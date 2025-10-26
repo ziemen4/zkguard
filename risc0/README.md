@@ -35,7 +35,7 @@ Policies are defined using Rust structs and enums located in the `zkguard_core` 
 
 ## 🚀 How to Run
 
-The project uses the Rust toolchain and Cargo for building and running. The `dao_prover` example serves as the main entry point for generating proofs for various predefined DAO security policies.
+The project uses the Rust toolchain and Cargo for building and running. The `prover` example serves as the main entry point for generating proofs for various predefined DAO security policies.
 
 ### Prerequisites
 * Rust, configured with the toolchain specified in `rust-toolchain.toml`. If you have `rustup` installed, it will automatically use the correct version when you are in this directory.
@@ -45,24 +45,10 @@ The project uses the Rust toolchain and Cargo for building and running. The `dao
 
 ### Running Examples
 
-To run any of the examples, use the `dao_prover` example runner from the `risc0` directory. Specify the policy you want to test using the `--example` flag.
-
-1.  **Run the "Contributor Payments" example:**
-    ```bash
-    cargo run --release --example dao_prover -- --example contributor_payments
-    ```
-2.  **Run the "Advanced Signer Policies" (2-of-2 threshold) example:**
-    ```bash
-    cargo run --release --example dao_prover -- --example advanced_signer_policies
-    ```
+To run any of the examples, use the `prover` example runner from the `risc0` directory.
 
 A full list of available examples can be found in `examples/README.md`. Each run will execute the host program, which invokes the zkVM to prove the action, and finally verifies the generated proof.
 
 ## ⛓️ On-Chain Verification
 
-The generated proof (`Receipt`) can be verified on an EVM-compatible blockchain. The `contracts/src/ZKGuard.sol` contract provides a reference implementation for this.
-
-The `verifyAndForward` function accepts the Risc0 `seal` (the proof) and the `journal`. It performs the following checks:
-1.  Calls the Risc0 verifier contract to verify the integrity of the proof itself.
-2.  Asserts that the public hashes committed in the journal match the trusted hashes stored in the `ZKGuard` contract's state (`policy_hash`, `groups_hash`, etc.).
-3.  If verification succeeds, it decodes the `userAction` and forwards the call to its intended destination.
+The current repository has no on-chain verification. You can see an end to end implementation in the [Safe ZKGuard](https://github.com/ziemen4/safe-zkguard) repository, where ZKGuard with Risc0 is implemented for the [Safe Wallet](https://github.com/safe-global/safe-wallet-monorepo).

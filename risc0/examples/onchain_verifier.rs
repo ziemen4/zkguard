@@ -35,6 +35,7 @@ pub async fn verify_onchain(
     contract_address: &str,
     onchain_seal: Vec<u8>,
     onchain_journal: Vec<u8>,
+    from: Vec<u8>,
     to: Vec<u8>,
     value: u128,
     data: Vec<u8>,
@@ -48,14 +49,15 @@ pub async fn verify_onchain(
     let safe_address_str = std::env::var("SAFE_ADDRESS").expect("SAFE_ADDRESS must be set");
     let safe_address = safe_address_str.parse::<Address>()?;
 
+    let from_addr = Address::from_slice(&from);
     let to_addr = Address::from_slice(&to);
     let val_u256 = U256::from(value);
     let nonce_u256 = U256::from(nonce);
 
-    let user_action = (to_addr, val_u256, nonce_u256, Bytes::from(data)).abi_encode_params();
+    let user_action =
+        (from_addr, to_addr, val_u256, nonce_u256, Bytes::from(data)).abi_encode_params();
 
     let calldata = IZKGuardSafeModule::verifyAndExecCall {
-        safe: safe_address,
         userAction: user_action.into(),
         seal: onchain_seal.into(),
         journal: onchain_journal.into(),

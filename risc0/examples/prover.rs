@@ -4,7 +4,7 @@ use anyhow::Result;
 use bincode::Options;
 use clap::Parser;
 use dotenv::dotenv;
-use k256::ecdsa::{SigningKey};
+use k256::ecdsa::SigningKey;
 use risc0_zkvm::sha::Digestible;
 use risc0_zkvm::{default_prover, ExecutorEnv, InnerReceipt, Prover};
 use rs_merkle::MerkleTree;
@@ -39,6 +39,8 @@ struct Args {
     allowlists_file: String,
     #[clap(long)]
     rule_id: u32,
+    #[clap(long)]
+    from: String,
     #[clap(long)]
     to: String,
     #[clap(long)]
@@ -101,6 +103,7 @@ impl From<TxType> for zkguard_core::TxType {
 #[derive(Deserialize, Debug, Clone)]
 pub enum DestinationPattern {
     Any,
+    Exact(String),
     Group(String),
     Allowlist(String),
 }
@@ -109,6 +112,12 @@ impl From<DestinationPattern> for zkguard_core::DestinationPattern {
     fn from(val: DestinationPattern) -> Self {
         match val {
             DestinationPattern::Any => zkguard_core::DestinationPattern::Any,
+            DestinationPattern::Exact(addr) => {
+                let addr = addr.strip_prefix("0x").unwrap_or(&addr);
+                let mut arr = [0u8; 20];
+                arr.copy_from_slice(&hex::decode(addr).unwrap());
+                zkguard_core::DestinationPattern::Exact(arr)
+            }
             DestinationPattern::Group(s) => zkguard_core::DestinationPattern::Group(s),
             DestinationPattern::Allowlist(s) => zkguard_core::DestinationPattern::Allowlist(s),
         }
@@ -171,6 +180,7 @@ fn encode<T: serde::Serialize>(data: &T) -> Vec<u8> {
 fn hash_user_action(ua: &UserAction) -> [u8; 32] {
     let mut h = Keccak::v256();
     let mut output = [0u8; 32];
+    h.update(&ua.from);
     h.update(&ua.to);
     h.update(&ua.value.to_be_bytes());
     h.update(&ua.data);
@@ -226,6 +236,7 @@ async fn run_prover(
     allowlists: &HashMap<String, Vec<[u8; 20]>>,
     verify_onchain_flag: bool,
 ) -> Result<()> {
+    println!("ACTION_FROM=0x{}", hex::encode(user_action.from));
     println!("ACTION_TO=0x{}", hex::encode(user_action.to));
     println!("ACTION_VALUE={}", user_action.value);
     println!("ACTION_DATA=0x{}", hex::encode(&user_action.data));
@@ -298,7 +309,10 @@ async fn run_prover(
 
     let onchain_seal = encode_seal(&receipt)?;
     println!("On-chain seal hex: 0x{}", hex::encode(&onchain_seal));
-    println!("Image ID: 0x{}", hex::encode(bytemuck::cast_slice(&ZKGUARD_POLICY_ID)));
+    println!(
+        "Image ID: 0x{}",
+        hex::encode(bytemuck::cast_slice(&ZKGUARD_POLICY_ID))
+    );
     print_public_input(&decode_public_input(&format!(
         "0x{}",
         hex::encode(&journal_bytes)
@@ -320,6 +334,7 @@ async fn run_prover(
             &contract_address,
             onchain_seal,
             journal_bytes,
+            user_action.from.to_vec(),
             user_action.to.to_vec(),
             user_action.value,
             user_action.data.clone(),
@@ -390,9 +405,11 @@ async fn main() -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("Policy line with id {} not found", args.rule_id))?
         .clone();
 
+    let from = parse_hex_address(&args.from)?;
     let to = parse_hex_address(&args.to)?;
     let data = hex::decode(args.data.strip_prefix("0x").unwrap_or(&args.data))?;
     let mut user_action = UserAction {
+        from,
         to,
         value: args.value,
         nonce: args.nonce,
@@ -404,9 +421,8 @@ async fn main() -> Result<()> {
 
     let mut signatures: Vec<Vec<u8>> = Vec::new();
     for pk_hex in &args.private_keys {
-        let sk = SigningKey::from_slice(&hex::decode(
-            pk_hex.strip_prefix("0x").unwrap_or(pk_hex),
-        )?)?;
+        let sk =
+            SigningKey::from_slice(&hex::decode(pk_hex.strip_prefix("0x").unwrap_or(pk_hex))?)?;
         let (signature, recovery_id) = sk.sign_prehash_recoverable(&message_hash)?;
         let mut sig_bytes = signature.to_bytes().to_vec();
         sig_bytes.push(recovery_id.to_byte() + 27);

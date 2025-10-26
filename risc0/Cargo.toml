@@ -23,5 +23,5 @@ default = []
 prove = ["risc0-zkvm/prove"]
 
 [[example]]
-name = "dao_prover"
-path = "examples/dao_prover.rs"
+name = "prover"
+path = "examples/prover.rs"

@@ -40,12 +40,13 @@ fn keccak256(bytes: &[u8]) -> [u8; 32] {
 }
 
 fn hash_user_action_keccak256(user_action: &UserAction) -> [u8; 32] {
+    let from = Address::from(user_action.from);
     let to = Address::from(user_action.to);
     let value = U256::from(user_action.value); // widen u128 -> U256
     let nonce = U256::from(user_action.nonce); // widen u128 -> U256
     let data = Bytes::from(user_action.data.clone());
 
-    let encoded = (to, value, nonce, data).abi_encode_params();
+    let encoded = (from, to, value, nonce, data).abi_encode_params();
     keccak256(&encoded)
 }
 

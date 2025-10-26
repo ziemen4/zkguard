@@ -55,6 +55,7 @@ fn match_destination(
 ) -> bool {
     match pattern {
         DestinationPattern::Any => true,
+        DestinationPattern::Exact(required_addr) => required_addr == addr,
         DestinationPattern::Group(name) => groups.get(name).map_or(false, |set| set.contains(addr)),
         DestinationPattern::Allowlist(name) => {
             lists.get(name).map_or(false, |set| set.contains(addr))
@@ -67,6 +68,7 @@ fn hash_user_action(user_action: &UserAction) -> [u8; 32] {
     let mut hasher = Keccak::v256();
     let mut output = [0u8; 32];
 
+    hasher.update(&user_action.from);
     hasher.update(&user_action.to);
     hasher.update(&user_action.value.to_be_bytes());
     hasher.update(&user_action.data);

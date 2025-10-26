@@ -9,8 +9,8 @@ use std::collections::HashMap;
 // CHANGE: Import the `Hasher` trait from tiny_keccak
 use tiny_keccak::{Hasher, Keccak};
 use zkguard_core::{
-    hash_policy_line_for_merkle_tree, AssetPattern, DestinationPattern, MerklePath,
-    PolicyLine, Sha256MerkleHasher, SignerPattern, TxType, UserAction,
+    hash_policy_line_for_merkle_tree, AssetPattern, DestinationPattern, MerklePath, PolicyLine,
+    Sha256MerkleHasher, SignerPattern, TxType, UserAction,
 };
 use zkguard_methods::{ZKGUARD_POLICY_ELF, ZKGUARD_POLICY_ID};
 
@@ -88,6 +88,7 @@ fn main() -> Result<()> {
     // Create the UserAction and sign it
     // ---------------------------------------------------------------------
     let mut user_action = UserAction {
+        from: from_addr,
         to: usdt_addr,
         value: 0,
         data,
@@ -125,7 +126,7 @@ fn main() -> Result<()> {
         destination: DestinationPattern::Allowlist("USDC-Allowlist".into()),
         signer: SignerPattern::Any,            // any signer
         asset: AssetPattern::Exact(usdc_addr), // only USDC
-        amount_max: None, // no limit
+        amount_max: None,                      // no limit
         function_selector: None,
     };
 

@@ -41,11 +41,14 @@ This implementation uses the `noir` language and the `bb.js` backend to build a 
 ➡️ **[See the `noir` README for technical details and instructions.](./noir/README.md)**
 
 
-
 ### 🔴 `risc0` (Rust) - zkVM
 This implementation uses the **Risc0 zkVM**, a general-purpose zero-knowledge virtual machine. Instead of designing a circuit, we write standard Rust code that executes inside the zkVM to perform the validation. This approach offers greater flexibility for writing highly complex and expressive policies.
 
 ➡️ **[See the `risc0` README for technical details and instructions.](./risc0/README.md)**
+
+## On-chain Implementation
+
+If you are looking for an end to end implementation, please see [Safe ZKGuard](https://github.com/ziemen4/safe-zkguard).
 
 ## Contributing
 

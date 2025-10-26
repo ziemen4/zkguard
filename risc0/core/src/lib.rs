@@ -109,6 +109,8 @@ pub enum TxType {
 pub enum DestinationPattern {
     /// Matches any address.
     Any,
+    /// Matches a specific address.
+    Exact([u8; 20]),
     /// Matches if the address is contained in the named group.
     Group(String),
     /// Matches if the address is contained in the named allow-list.
@@ -163,6 +165,7 @@ pub const ETH_ASSET: [u8; 20] = [0u8; 20];
 /// executed on-chain
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UserAction {
+    pub from: [u8; 20],           // contract address initiating the action
     pub to: [u8; 20],               // target contract or direct recipient
     pub value: u128,                // native token amount (wei)
     pub nonce: u64,                // Safe's current nonce for replay protection

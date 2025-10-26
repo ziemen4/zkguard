@@ -26,9 +26,11 @@ cargo run --example prover -- \
     --groups-file examples/groups.json \
     --allowlists-file examples/allowlists.json \
     --rule-id <RULE_ID> \
+    --from <FROM_ADDRESS> \
     --to <TO_ADDRESS> \
     --value <VALUE_IN_WEI> \
     --data <HEX_CALLDATA> \
+    -- nonce <NONCE> \
     --private-key <SIGNER_PRIVATE_KEY> \
     --verify-onchain
 ```
@@ -36,9 +38,11 @@ cargo run --example prover -- \
 ### Arguments
 
 *   `--rule-id`: The `id` of the policy line in `policy.json` that you are proving against.
+*   `--from`: The origin address of the transaction
 *   `--to`: The destination address (`to`) of the transaction.
 *   `--value`: The amount of native currency (e.g., Wei for ETH) to send. Use `0` for contract calls that don't transfer native value.
 *   `--data`: The hexadecimal calldata for the transaction. For an ERC20 transfer, this would be the `transfer(address,uint256)` call data. For a simple contract call, it would be the function selector.
+*   `--nonce`: The nonce of the wallet performing the action.
 *   `--private-key`: The private key of the signer required by the policy rule. This key is used to sign the user action.
 *   `--verify-onchain`: (Optional) If included, the prover will attempt to send a transaction to the on-chain `ZKGuardSafeModule` to verify the proof and execute the action.
 
