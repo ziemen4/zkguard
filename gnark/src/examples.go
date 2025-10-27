@@ -16,6 +16,16 @@ import (
 	"github.com/consensys/gnark/test"
 )
 
+var fromAddress *big.Int
+
+func init() {
+	fromAddrBytes, err := hex.DecodeString("3C44CdDdB6a900fa2b585dd299e03d12FA4293BC")
+	if err != nil {
+		panic(err)
+	}
+	fromAddress = new(big.Int).SetBytes(fromAddrBytes)
+}
+
 // execute runs a given assignment in one of two modes:
 // 1. Fast logic check (prove=false)
 // 2. Full proof generation and verification (prove=true)
@@ -131,7 +141,7 @@ func runContributorPayments(
 	calldataBuf.Write(bytes.Repeat([]byte{0}, 12))
 	calldataBuf.Write(teamWallet1)
 	calldataBuf.Write(amountBytes)
-	assignment := buildWitness(policyLines, 0, new(big.Int).SetBytes(stablecoin), new(big.Int), calldataBuf.Bytes(), []*ecdsa.PrivateKey{sk}, groups, groupSizes, groupHash, allowLists, allowSizes, allowHash)
+	assignment := buildWitness(policyLines, 0, fromAddress, new(big.Int).SetBytes(stablecoin), new(big.Int), calldataBuf.Bytes(), []*ecdsa.PrivateKey{sk}, groups, groupSizes, groupHash, allowLists, allowSizes, allowHash)
 	execute(assignment, prove)
 }
 
@@ -147,7 +157,7 @@ func runDeFiSwaps(sk *ecdsa.PrivateKey,
 	prove bool) {
 	fmt.Println("\n▶ Running Example: DeFi Swaps")
 	policyLines := []PolicyLine{{ID: 2, TxType: TT_CONTRACTCALL, DestinationTag: DP_ALLOWLIST, DestinationIdx: 0, SignerTag: SP_EXACT, SignerAddr: new(big.Int).SetBytes(daoAddr[:]), AssetTag: AP_ANY, AmountMax: new(big.Int), Action: ACT_ALLOW}}
-	assignment := buildWitness(policyLines, 0, new(big.Int).SetBytes(dex), new(big.Int).SetUint64(1e18), []byte{}, []*ecdsa.PrivateKey{sk}, groups, groupSizes, groupHash, allowLists, allowSizes, allowHash)
+	assignment := buildWitness(policyLines, 0, fromAddress, new(big.Int).SetBytes(dex), new(big.Int).SetUint64(1e18), []byte{}, []*ecdsa.PrivateKey{sk}, groups, groupSizes, groupHash, allowLists, allowSizes, allowHash)
 	execute(assignment, prove)
 }
 
@@ -172,7 +182,7 @@ func runSupplyLending(sk *ecdsa.PrivateKey,
 	calldataBuf.Write(bytes.Repeat([]byte{0}, 12))
 	calldataBuf.Write(lendingPool)
 	calldataBuf.Write(amountBytes)
-	assignment := buildWitness(policyLines, 0, new(big.Int).SetBytes(weth), new(big.Int), calldataBuf.Bytes(), []*ecdsa.PrivateKey{sk}, groups, groupSizes, groupHash, allowLists, allowSizes, allowHash)
+	assignment := buildWitness(policyLines, 0, fromAddress, new(big.Int).SetBytes(weth), new(big.Int), calldataBuf.Bytes(), []*ecdsa.PrivateKey{sk}, groups, groupSizes, groupHash, allowLists, allowSizes, allowHash)
 	execute(assignment, prove)
 }
 
@@ -197,7 +207,7 @@ func runAmountLimits(sk *ecdsa.PrivateKey,
 	calldataBuf.Write(bytes.Repeat([]byte{0}, 12))
 	calldataBuf.Write(teamWallet1)
 	calldataBuf.Write(amountBytes)
-	assignment := buildWitness(policyLines, 0, new(big.Int).SetBytes(stablecoin), new(big.Int), calldataBuf.Bytes(), []*ecdsa.PrivateKey{sk}, groups, groupSizes, groupHash, allowLists, allowSizes, allowHash)
+	assignment := buildWitness(policyLines, 0, fromAddress, new(big.Int).SetBytes(stablecoin), new(big.Int), calldataBuf.Bytes(), []*ecdsa.PrivateKey{sk}, groups, groupSizes, groupHash, allowLists, allowSizes, allowHash)
 	execute(assignment, prove)
 }
 
@@ -214,7 +224,7 @@ func runFunctionLevelControls(sk *ecdsa.PrivateKey,
 	fmt.Println("\n▶ Running Example: Function-Level Controls (Valid)")
 	swapSelector, _ := hex.DecodeString("7ff36ab5")
 	policyLines := []PolicyLine{{ID: 5, TxType: TT_CONTRACTCALL, DestinationTag: DP_ALLOWLIST, DestinationIdx: 0, SignerTag: SP_EXACT, SignerAddr: new(big.Int).SetBytes(daoAddr[:]), AssetTag: AP_ANY, AmountMax: new(big.Int), FunctionSelector: swapSelector, Action: ACT_ALLOW}}
-	assignment := buildWitness(policyLines, 0, new(big.Int).SetBytes(dex), new(big.Int).SetUint64(1e18), swapSelector, []*ecdsa.PrivateKey{sk}, groups, groupSizes, groupHash, allowLists, allowSizes, allowHash)
+	assignment := buildWitness(policyLines, 0, fromAddress, new(big.Int).SetBytes(dex), new(big.Int).SetUint64(1e18), swapSelector, []*ecdsa.PrivateKey{sk}, groups, groupSizes, groupHash, allowLists, allowSizes, allowHash)
 	execute(assignment, prove)
 }
 
@@ -233,7 +243,7 @@ func runInteractDapps(sk *ecdsa.PrivateKey,
 	to := new(big.Int).SetBytes(lendingPool)
 	value := new(big.Int) // value: 0
 	calldata := []byte{0x12, 0x34, 0x56, 0x78}
-	assignment := buildWitness(policyLines, 0, to, value, calldata, []*ecdsa.PrivateKey{sk}, groups, groupSizes, groupHash, allowLists, allowSizes, allowHash)
+	assignment := buildWitness(policyLines, 0, fromAddress, to, value, calldata, []*ecdsa.PrivateKey{sk}, groups, groupSizes, groupHash, allowLists, allowSizes, allowHash)
 	execute(assignment, prove)
 }
 
@@ -271,6 +281,6 @@ func runAdvancedSignerPolicies(governanceSigners []*ecdsa.PrivateKey,
 	value := new(big.Int).SetUint64(10e18) // 10 ETH
 	calldata := []byte{0xaa, 0xbb, 0xcc, 0xdd}
 
-	assignment := buildWitness(policyLines, 0, to, value, calldata, signers, groups, groupSizes, groupHash, allowLists, allowSizes, allowHash)
+	assignment := buildWitness(policyLines, 0, fromAddress, to, value, calldata, signers, groups, groupSizes, groupHash, allowLists, allowSizes, allowHash)
 	execute(assignment, prove)
 }

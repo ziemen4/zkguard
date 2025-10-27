@@ -2,7 +2,7 @@ mod policy;
 
 use policy::{
     ASSET_PATTERN_ANY, ASSET_PATTERN_EXACT, AssetPattern, DEST_PATTERN_ALLOWLIST, DEST_PATTERN_ANY,
-    DEST_PATTERN_GROUP, DestinationPattern, MAX_CALLDATA_SIZE, MAX_SIGNATURES, PolicyLine,
+    DEST_PATTERN_EXACT, DEST_PATTERN_GROUP, DestinationPattern, MAX_CALLDATA_SIZE, MAX_SIGNATURES, PolicyLine,
     SIGNATURE_SIZE, SIGNER_PATTERN_ANY, SIGNER_PATTERN_EXACT, SIGNER_PATTERN_GROUP,
     SIGNER_PATTERN_THRESHOLD, SignerPattern, TX_TYPE_CONTRACT_CALL, TX_TYPE_TRANSFER, UserAction,
 };
@@ -34,6 +34,7 @@ global MAX_MERKLE_DEPTH: u32 = 64;
 //   - tx_type (Field, 32)
 //   - destination.kind (Field, 32)
 //   - destination.name_hash (Field, 32)
+//   - destination.address (20)
 //   - signer.kind (Field, 32)
 //   - signer.address (20)
 //   - signer.group_name_hash (Field, 32)
@@ -44,7 +45,7 @@ global MAX_MERKLE_DEPTH: u32 = 64;
 //   - amount_max (Field, 32)
 //   - has_function_selector (1)
 //   - function_selector (4)
-global POLICY_LEAF_LEN: u32 = 271;
+global POLICY_LEAF_LEN: u32 = 291;
 
 // Fixed-size Merkle path input for Noir.
 pub struct MerklePathInput {
@@ -100,6 +101,12 @@ fn serialize_policy_line(rule: PolicyLine) -> [u8; POLICY_LEAF_LEN] {
     let dname_be: [u8; 32] = rule.destination.name_hash.to_be_bytes::<32>();
     for i in 0..32 {
         out[p] = dname_be[i];
+        p += 1;
+    }
+
+    // destination.address (20)
+    for i in 0..20 {
+        out[p] = rule.destination.address[i];
         p += 1;
     }
 
@@ -246,11 +253,17 @@ fn eth_addr_from_pubkey(pubx: [u8; 32], puby: [u8; 32]) -> [u8; 20] {
     addr
 }
 
-// Hash a UserAction for signing: to (20) || value(32 BE) || data[0..data_len].
+// Hash a UserAction for signing: from(20) || to(20) || value(32 BE) || data[0..data_len].
 fn hash_user_action(action: UserAction) -> [u8; 32] {
     // Build a fixed buffer and track the logical length.
-    let mut buf = [0u8; 20 + 32 + MAX_CALLDATA_SIZE];
+    let mut buf = [0u8; 20 + 20 + 32 + MAX_CALLDATA_SIZE];
     let mut len: u32 = 0;
+
+    // from (20)
+    for i in 0..20 {
+        buf[len] = action.from[i];
+        len += 1;
+    }
 
     // to (20)
     for i in 0..20 {
@@ -305,6 +318,8 @@ fn match_destination(
     let mut ok = false;
     if pattern.kind == DEST_PATTERN_ANY {
         ok = true;
+    } else if pattern.kind == DEST_PATTERN_EXACT {
+        ok = pattern.address == addr;
     } else if pattern.kind == DEST_PATTERN_GROUP {
         ok = is_member(addr, ctx.groups, ctx.group_name_hashes, pattern.name_hash);
     } else if pattern.kind == DEST_PATTERN_ALLOWLIST {

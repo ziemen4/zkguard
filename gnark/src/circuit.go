@@ -56,6 +56,8 @@ const (
 	DP_GROUP = 1
 	// Destination must be on a specified allowlist.
 	DP_ALLOWLIST = 2
+	// The destination must be a specific address.
+	DP_EXACT = 3
 
 	// SignerPolicy Tags: Define how the transaction's signer(s) are authenticated.
 	// Any valid signature is allowed.
@@ -102,6 +104,8 @@ type PolicyLineWitness struct {
 	DestinationTag frontend.Variable
 	// The index of the group/allowlist to use for the destination check.
 	DestinationIdx frontend.Variable
+	// The specific address for DP_EXACT checks.
+	DestinationAddr frontend.Variable
 	// The signer authentication type (e.g., SP_THRESHOLD).
 	SignerTag frontend.Variable
 	// The specific address for SP_EXACT checks.
@@ -129,6 +133,7 @@ type PolicyLine struct {
 	TxType           int
 	DestinationTag   int
 	DestinationIdx   int
+	DestinationAddr  *big.Int
 	SignerTag        int
 	SignerAddr       *big.Int
 	SignerGroupIdx   int
@@ -165,6 +170,8 @@ type ZKGuardCircuit struct {
 	// the circuit's constraints.
 
 	// --- On-chain action details ---
+	// The sender address (`from`) of the transaction.
+	From frontend.Variable
 	// The destination address (`to`) of the transaction.
 	To frontend.Variable
 	// The amount of native currency (`value`) sent.
@@ -354,6 +361,7 @@ func (c *ZKGuardCircuit) Define(api frontend.API) error {
 	write1Byte(c.PolicyLine.TxType)
 	write1Byte(c.PolicyLine.DestinationTag)
 	write1Byte(c.PolicyLine.DestinationIdx)
+	write32Bytes(c.PolicyLine.DestinationAddr)
 	write1Byte(c.PolicyLine.SignerTag)
 	write32Bytes(c.PolicyLine.SignerAddr)
 	write1Byte(c.PolicyLine.SignerGroupIdx)
@@ -396,20 +404,25 @@ func (c *ZKGuardCircuit) Define(api frontend.API) error {
 	// This section computes the message hash that the user(s) must have signed.
 	// For Ethereum compatibility, this must use Keccak256.
 	hMsg, _ := keccak.NewLegacyKeccak256(api)
-	// Serialize the transaction data (To, Value, Data) into a byte array for hashing.
-	msgForHashBytes := make([]uints.U8, 20+16+MAX_DATA_BYTES)
+	// Serialize the transaction data (From, To, Value, Data) into a byte array for hashing.
+	msgForHashBytes := make([]uints.U8, 20+20+16+MAX_DATA_BYTES)
+	fromBytes := api.ToBinary(c.From, 160)
+	for i := 0; i < 20; i++ {
+		byteVal := api.FromBinary(fromBytes[(19-i)*8 : (20-i)*8]...)
+		msgForHashBytes[i] = uapi.ByteValueOf(byteVal)
+	}
 	toBytes := api.ToBinary(c.To, 160)
 	for i := 0; i < 20; i++ {
 		byteVal := api.FromBinary(toBytes[(19-i)*8 : (20-i)*8]...)
-		msgForHashBytes[i] = uapi.ByteValueOf(byteVal)
+		msgForHashBytes[20+i] = uapi.ByteValueOf(byteVal)
 	}
 	valueBytes := api.ToBinary(c.Value, 128)
 	for i := 0; i < 16; i++ {
 		byteVal := api.FromBinary(valueBytes[(15-i)*8 : (16-i)*8]...)
-		msgForHashBytes[20+i] = uapi.ByteValueOf(byteVal)
+		msgForHashBytes[20+20+i] = uapi.ByteValueOf(byteVal)
 	}
 	for i := 0; i < MAX_DATA_BYTES; i++ {
-		msgForHashBytes[20+16+i] = uapi.ByteValueOf(c.Data[i])
+		msgForHashBytes[20+20+16+i] = uapi.ByteValueOf(c.Data[i])
 	}
 	hMsg.Write(msgForHashBytes)
 	// This is the 32-byte hash that was signed.
@@ -619,7 +632,8 @@ func (c *ZKGuardCircuit) Define(api frontend.API) error {
 	mDestAny := eq(api, line.DestinationTag, DP_ANY)
 	mDestGrp := api.And(eq(api, line.DestinationTag, DP_GROUP), inSet(api, destAddr, destGroup, destGroupSize))
 	mDestList := api.And(eq(api, line.DestinationTag, DP_ALLOWLIST), inSet(api, destAddr, destList, destListSize))
-	mDest := orBitwise(api, mDestAny, orBitwise(api, mDestGrp, mDestList))
+	mDestExact := api.And(eq(api, line.DestinationTag, DP_EXACT), eq(api, destAddr, line.DestinationAddr))
+	mDest := orBitwise(api, mDestAny, orBitwise(api, mDestGrp, orBitwise(api, mDestList, mDestExact)))
 
 	// Asset Match
 	mAssetAny := eq(api, line.AssetTag, AP_ANY)

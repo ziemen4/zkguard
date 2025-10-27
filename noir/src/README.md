@@ -29,7 +29,7 @@ python -m pip install coincurve eth-hash toml
 We construct a digest from the user action:
 
 ```
-keccak( to[20] || value[32] || data[:data_len] )
+keccak( from[20] || to[20] || value[32] || data[:data_len] )
 ```
 
 This must match the digest used inside the circuit.
@@ -66,7 +66,7 @@ We then:
 
 ## Running the generator
 
-Single scenario (from this folder):
+Single scenario:
 
 ```bash
 python generate_prover_toml.py --scenario defi_swaps --key <hex_priv_no_0x> --out ../Prover.toml
@@ -100,5 +100,5 @@ Available scenarios:
 
 ## Version notes
 
-See the top-level Noir README (`auth-policy/noir/README.md`) for recommended tool versions. Re‑validate the workflow if you upgrade.
+See the top-level Noir README (`auth-policy/noir/README.md`) for recommended tool versions.
 

@@ -63,7 +63,7 @@ SAFE_ADDRESS="<YOUR_GNOIS_SAFE_ADDRESS>"
 
 Here are some examples based on the rules defined in `policy.json`.
 
-### 1. Contributor Payments (Rule 1)
+### 1. Contributor Payments (Rule 2)
 
 This rule allows sending up to 5,000 USDC to a wallet in the `TeamWallets` group.
 
@@ -75,14 +75,16 @@ cargo run --example prover -- \
     --policy-file examples/policy.json \
     --groups-file examples/groups.json \
     --allowlists-file examples/allowlists.json \
-    --rule-id 1 \
+    --rule-id 2 \
+    --from 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 \
     --to 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 \
     --value 0 \
+    --nonce 0 \
     --data a9059cbb0000000000000000000000001111111111111111111111111111111111111111000000000000000000000000000000000000000000000000000000012a05f200 \
-    --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+    --private-keys 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
 ```
 
-### 2. DeFi Swaps on Approved DEXs (Rule 2)
+### 2. DeFi Swaps on Approved DEXs (Rule 3)
 
 This rule permits making a generic contract call to a DEX in the `ApprovedDEXs` allowlist.
 
@@ -93,14 +95,16 @@ cargo run --example prover -- \
     --policy-file examples/policy.json \
     --groups-file examples/groups.json \
     --allowlists-file examples/allowlists.json \
-    --rule-id 2 \
+    --rule-id 3 \
+    --from 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 \
     --to 0x3333333333333333333333333333333333333333 \
     --value 0 \
+    --nonce 0 \
     --data ddc4d724 \
-    --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+    --private-keys 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
 ```
 
-### 3. Function-Level Controls for DEX Swaps (Rule 6)
+### 3. Function-Level Controls for DEX Swaps (Rule 7)
 
 This rule restricts calls to an approved DEX to a *specific* function (`0x7ff36ab5`).
 
@@ -111,15 +115,29 @@ cargo run --example prover -- \
     --policy-file examples/policy.json \
     --groups-file examples/groups.json \
     --allowlists-file examples/allowlists.json \
-    --rule-id 6 \
+    --rule-id 7 \
+    --from 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 \
     --to 0x3333333333333333333333333333333333333333 \
     --value 0 \
+    --nonce 0 \
     --data 7ff36ab5 \
-    --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+    --private-keys 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
 ```
 
-### 4. Advanced Signer Policies (Rule 7)
+### 4. Advanced Signer Policies (Rule 8)
 
 This rule requires a 2-of-2 signature from the `GovernanceSigners` group.
 
-**Note**: The current `prover.rs` only accepts a single `--private-key` argument. To prove against this rule, the prover script would need to be modified to accept multiple private keys, generate a signature for each one, and include all signatures in the `UserAction`.
+```bash
+cargo run --example prover -- \
+    --policy-file examples/policy.json \
+    --groups-file examples/groups.json \
+    --allowlists-file examples/allowlists.json \
+    --rule-id 8 \
+    --from 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 \
+    --to 0x3333333333333333333333333333333333333333 \
+    --value 0 \
+    --nonce 0 \
+    --data 7ff36ab5 \
+    --private-keys 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d
+```

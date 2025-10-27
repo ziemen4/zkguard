@@ -18,6 +18,7 @@ TX_TYPE_CONTRACT_CALL = 1
 DEST_PATTERN_ANY = 0
 DEST_PATTERN_GROUP = 1
 DEST_PATTERN_ALLOWLIST = 2
+DEST_PATTERN_EXACT = 3
 
 SIGNER_PATTERN_ANY = 0
 SIGNER_PATTERN_EXACT = 1
@@ -26,6 +27,8 @@ SIGNER_PATTERN_THRESHOLD = 3
 
 ASSET_PATTERN_ANY = 0
 ASSET_PATTERN_EXACT = 1
+
+FIXED_FROM_ADDRESS = bytes.fromhex("0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC".removeprefix("0x"))
 
 BN254_SCALAR_MODULUS = int(
     "21888242871839275222246405745257275088548364400416034343698204186575808495617"
@@ -74,8 +77,19 @@ def eth_addr_from_xy(x: bytes, y: bytes) -> bytes:
     # (Your original: keccak(x||y)[12:])
     return keccak(x + y)[12:]
 
-def digest_for_user_action(to20: bytes, value_u256: int, data: bytes, data_len: int) -> bytes:
+def derive_pub_xy_addr(privkey_bytes: bytes) -> tuple[bytes, bytes, bytes]:
+    """
+    Return (x, y, addr) for a secp256k1 private key.
+    - pubkey is uncompressed (0x04 || X || Y), we drop the 0x04 when hashing.
+    - addr = last 20 bytes of keccak256(X||Y)
+    """
+    pk = PrivateKey(privkey_bytes)
+    pub_uncompressed = pk.public_key.format(compressed=False)
+    return pub_uncompressed[1:33], pub_uncompressed[33:65], eth_addr_from_xy(pub_uncompressed[1:33], pub_uncompressed[33:65])
+
+def digest_for_user_action(from20: bytes, to20: bytes, value_u256: int, data: bytes, data_len: int) -> bytes:
     buf = bytearray()
+    buf += from20
     buf += to20
     buf += u256_be(value_u256)
     buf += data[:data_len]
@@ -162,8 +176,8 @@ def _u256_to_be32(n: int) -> bytes:
 
 def serialize_rule_to_leaf_preimage(rule: dict) -> bytes:
     """
-    Build the fixed 271-byte preimage according to the Noir circuit layout:
-      tx_type(32) | dest.kind(32) | dest.name_hash(32)
+    Build the fixed 291-byte preimage according to the Noir circuit layout:
+      tx_type(32) | dest.kind(32) | dest.name_hash(32) | dest.address(20)
       | signer.kind(32) | signer.address(20) | signer.group_name_hash(32) | signer.threshold(1)
       | asset.kind(32) | asset.address(20)
       | has_amount_max(1) | amount_max(32)
@@ -179,6 +193,7 @@ def serialize_rule_to_leaf_preimage(rule: dict) -> bytes:
     dest = rule["destination"]
     out += _u256_to_be32(dest["kind"])  # Field -> 32
     out += _field_bytes32_from_bytes32(dest["name_hash_bytes"])  # Field -> 32
+    out += dest["address"]  # [u8;20]
 
     # signer
     signer = rule["signer"]
@@ -199,8 +214,8 @@ def serialize_rule_to_leaf_preimage(rule: dict) -> bytes:
     fs = rule["function_selector"] or b"\x00" * 4
     out += fs[:4].ljust(4, b"\x00")                   # [u8;4]
 
-    # Sanity: ensure 271 bytes
-    assert len(out) == 271, f"leaf preimage must be 271 bytes, got {len(out)}"
+    # Sanity: ensure 291 bytes (added dest.address)
+    assert len(out) == 291, f"leaf preimage must be 291 bytes, got {len(out)}"
     return bytes(out)
 
 def compute_merkle_singleton(rule: dict) -> tuple[bytes, list[bytes], int, int]:
@@ -254,6 +269,7 @@ def write_toml(user_action, rule, ctx, out_path: str):
 
     toml_data = {
         "user_action": {
+            "from": format_hex_array(user_action["from"], pad_to=20),
             "to": format_hex_array(user_action["to"], pad_to=20),
             "value": user_action["value"],
             "data": format_hex_array(data_padded, pad_to=MAX_CALLDATA_SIZE),
@@ -267,6 +283,7 @@ def write_toml(user_action, rule, ctx, out_path: str):
             "destination": {
                 "kind": rule["destination"]["kind"],
                 "name_hash": bytes32_to_field_hex(rule["destination"]["name_hash_bytes"]),
+                "address": format_hex_array(rule["destination"]["address"], pad_to=20),
             },
             "signer": {
                 "kind": rule["signer"]["kind"],
@@ -320,17 +337,18 @@ def contributor_payments(privkey_hex: str):
     data     = selector + team_wallet_1.rjust(32, b"\x00") + u256_be(amount)
     dlen     = len(data)
 
-    digest = digest_for_user_action(to20=usdc, value_u256=0, data=data, data_len=dlen)
+    digest = digest_for_user_action(from20=FIXED_FROM_ADDRESS, to20=usdc, value_u256=0, data=data, data_len=dlen)
     sig, x, y, addr = sign_digest(priv, digest)
 
     user_action = {
+        "from": FIXED_FROM_ADDRESS,
         "to": usdc, "value": 0, "data": data, "data_len": dlen,
         "signatures": [sig], "signature_count": 1,
         "_digest": digest,
     }
     rule = {
         "id": 1, "tx_type": TX_TYPE_TRANSFER,
-        "destination": { "kind": DEST_PATTERN_GROUP, "name_hash_bytes": group_hash_b },
+        "destination": { "kind": DEST_PATTERN_GROUP, "name_hash_bytes": group_hash_b, "address": b"\x00"*20 },
         "signer": { "kind": SIGNER_PATTERN_EXACT, "address": addr, "group_name_hash_bytes": b"\x00"*32, "threshold": 0 },
         "asset": { "kind": ASSET_PATTERN_EXACT, "address": usdc },
         "has_amount_max": False, "amount_max": 0,
@@ -357,17 +375,18 @@ def defi_swaps(privkey_hex: str):
     data     = selector
     dlen     = len(data)
 
-    digest = digest_for_user_action(to20=dex_router, value_u256=0, data=data, data_len=dlen)
+    digest = digest_for_user_action(from20=FIXED_FROM_ADDRESS, to20=dex_router, value_u256=0, data=data, data_len=dlen)
     sig, x, y, addr = sign_digest(priv, digest)
 
     user_action = {
+        "from": FIXED_FROM_ADDRESS,
         "to": dex_router, "value": 0, "data": data, "data_len": dlen,
         "signatures": [sig], "signature_count": 1,
         "_digest": digest,
     }
     rule = {
         "id": 2, "tx_type": TX_TYPE_CONTRACT_CALL,
-        "destination": { "kind": DEST_PATTERN_ALLOWLIST, "name_hash_bytes": allowlist_hash_b },
+        "destination": { "kind": DEST_PATTERN_ALLOWLIST, "name_hash_bytes": allowlist_hash_b, "address": b"\x00"*20 },
         "signer": { "kind": SIGNER_PATTERN_EXACT, "address": addr, "group_name_hash_bytes": b"\x00"*32, "threshold": 0 },
         "asset": { "kind": ASSET_PATTERN_ANY, "address": b"\x00"*20 },
         "has_amount_max": False, "amount_max": 0,
@@ -397,17 +416,18 @@ def supply_lending(privkey_hex: str):
     data     = selector + lending_pool.rjust(32, b"\x00") + u256_be(amount)
     dlen     = len(data)
 
-    digest = digest_for_user_action(to20=usdc, value_u256=0, data=data, data_len=dlen)
+    digest = digest_for_user_action(from20=FIXED_FROM_ADDRESS, to20=usdc, value_u256=0, data=data, data_len=dlen)
     sig, x, y, addr = sign_digest(priv, digest)
 
     user_action = {
+        "from": FIXED_FROM_ADDRESS,
         "to": usdc, "value": 0, "data": data, "data_len": dlen,
         "signatures": [sig], "signature_count": 1,
         "_digest": digest,
     }
     rule = {
         "id": 3, "tx_type": TX_TYPE_TRANSFER,
-        "destination": { "kind": DEST_PATTERN_ALLOWLIST, "name_hash_bytes": allowlist_hash_b },
+        "destination": { "kind": DEST_PATTERN_ALLOWLIST, "name_hash_bytes": allowlist_hash_b, "address": b"\x00"*20 },
         "signer": { "kind": SIGNER_PATTERN_EXACT, "address": addr, "group_name_hash_bytes": b"\x00"*32, "threshold": 0 },
         "asset": { "kind": ASSET_PATTERN_EXACT, "address": usdc },
         "has_amount_max": False, "amount_max": 0,
@@ -434,17 +454,18 @@ def interact_dapps(privkey_hex: str):
     data     = selector
     dlen     = len(data)
 
-    digest = digest_for_user_action(to20=protocol, value_u256=0, data=data, data_len=dlen)
+    digest = digest_for_user_action(from20=FIXED_FROM_ADDRESS, to20=protocol, value_u256=0, data=data, data_len=dlen)
     sig, x, y, addr = sign_digest(priv, digest)
 
     user_action = {
+        "from": FIXED_FROM_ADDRESS,
         "to": protocol, "value": 0, "data": data, "data_len": dlen,
         "signatures": [sig], "signature_count": 1,
         "_digest": digest,
     }
     rule = {
         "id": 4, "tx_type": TX_TYPE_CONTRACT_CALL,
-        "destination": { "kind": DEST_PATTERN_ALLOWLIST, "name_hash_bytes": allowlist_hash_b },
+        "destination": { "kind": DEST_PATTERN_ALLOWLIST, "name_hash_bytes": allowlist_hash_b, "address": b"\x00"*20 },
         "signer": { "kind": SIGNER_PATTERN_EXACT, "address": addr, "group_name_hash_bytes": b"\x00"*32, "threshold": 0 },
         "asset": { "kind": ASSET_PATTERN_ANY, "address": b"\x00"*20 },
         "has_amount_max": False, "amount_max": 0,
@@ -475,17 +496,18 @@ def amount_limits(privkey_hex: str):
     data     = selector + team_wallet_1.rjust(32, b"\x00") + u256_be(amount)
     dlen     = len(data)
 
-    digest = digest_for_user_action(to20=usdc, value_u256=0, data=data, data_len=dlen)
+    digest = digest_for_user_action(from20=FIXED_FROM_ADDRESS, to20=usdc, value_u256=0, data=data, data_len=dlen)
     sig, x, y, addr = sign_digest(priv, digest)
 
     user_action = {
+        "from": FIXED_FROM_ADDRESS,
         "to": usdc, "value": 0, "data": data, "data_len": dlen,
         "signatures": [sig], "signature_count": 1,
         "_digest": digest,
     }
     rule = {
         "id": 5, "tx_type": TX_TYPE_TRANSFER,
-        "destination": { "kind": DEST_PATTERN_GROUP, "name_hash_bytes": group_hash_b },
+        "destination": { "kind": DEST_PATTERN_GROUP, "name_hash_bytes": group_hash_b, "address": b"\x00"*20 },
         "signer": { "kind": SIGNER_PATTERN_EXACT, "address": addr, "group_name_hash_bytes": b"\x00"*32, "threshold": 0 },
         "asset": { "kind": ASSET_PATTERN_EXACT, "address": usdc },
         "has_amount_max": True, "amount_max": max_amount,
@@ -512,17 +534,18 @@ def function_level_controls(privkey_hex: str):
     data     = selector
     dlen     = len(data)
 
-    digest = digest_for_user_action(to20=dex_router, value_u256=0, data=data, data_len=dlen)
+    digest = digest_for_user_action(from20=FIXED_FROM_ADDRESS, to20=dex_router, value_u256=0, data=data, data_len=dlen)
     sig, x, y, addr = sign_digest(priv, digest)
 
     user_action = {
+        "from": FIXED_FROM_ADDRESS,
         "to": dex_router, "value": 0, "data": data, "data_len": dlen,
         "signatures": [sig], "signature_count": 1,
         "_digest": digest,
     }
     rule = {
         "id": 6, "tx_type": TX_TYPE_CONTRACT_CALL,
-        "destination": { "kind": DEST_PATTERN_ALLOWLIST, "name_hash_bytes": allowlist_hash_b },
+        "destination": { "kind": DEST_PATTERN_ALLOWLIST, "name_hash_bytes": allowlist_hash_b, "address": b"\x00"*20 },
         "signer": { "kind": SIGNER_PATTERN_EXACT, "address": addr, "group_name_hash_bytes": b"\x00"*32, "threshold": 0 },
         "asset": { "kind": ASSET_PATTERN_ANY, "address": b"\x00"*20 },
         "has_amount_max": False, "amount_max": 0,
@@ -550,12 +573,13 @@ def advanced_signer_policies(privkey_hex_1: str, privkey_hex_2: str):
     data     = selector
     dlen     = len(data)
 
-    digest = digest_for_user_action(to20=dex_router, value_u256=0, data=data, data_len=dlen)
+    digest = digest_for_user_action(from20=FIXED_FROM_ADDRESS, to20=dex_router, value_u256=0, data=data, data_len=dlen)
 
     sig1, x1, y1, addr1 = sign_digest(k1, digest)
     sig2, x2, y2, addr2 = sign_digest(k2, digest)
 
     user_action = {
+        "from": FIXED_FROM_ADDRESS,
         "to": dex_router, "value": 0, "data": data, "data_len": dlen,
         "signatures": [sig1, sig2], "signature_count": 2,
         "_digest": digest,
@@ -563,7 +587,7 @@ def advanced_signer_policies(privkey_hex_1: str, privkey_hex_2: str):
     rule = {
         "id": 7, "tx_type": TX_TYPE_CONTRACT_CALL,
         # corrected to DEX allowlist
-        "destination": { "kind": DEST_PATTERN_ALLOWLIST, "name_hash_bytes": keccak256(b"ApprovedDEXs") },
+        "destination": { "kind": DEST_PATTERN_ALLOWLIST, "name_hash_bytes": keccak256(b"ApprovedDEXs"), "address": b"\x00"*20 },
         "signer": { "kind": SIGNER_PATTERN_THRESHOLD, "address": b"\x00"*20, "group_name_hash_bytes": group_hash_b, "threshold": 2 },
         "asset": { "kind": ASSET_PATTERN_ANY, "address": b"\x00"*20 },
         "has_amount_max": False, "amount_max": 0,

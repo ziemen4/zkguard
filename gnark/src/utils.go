@@ -85,8 +85,12 @@ func serializePolicyLineForHash(p PolicyLine) []byte {
 	buf.WriteByte(byte(p.TxType))
 	buf.WriteByte(byte(p.DestinationTag))
 	buf.WriteByte(byte(p.DestinationIdx))
+	var destAddrBytes, signerAddrBytes, assetAddrBytes, amountMaxBytes []byte
+	if p.DestinationAddr != nil {
+		destAddrBytes = p.DestinationAddr.Bytes()
+	}
+	buf.Write(padTo32Bytes(destAddrBytes))
 	buf.WriteByte(byte(p.SignerTag))
-	var signerAddrBytes, assetAddrBytes, amountMaxBytes []byte
 	if p.SignerAddr != nil {
 		signerAddrBytes = p.SignerAddr.Bytes()
 	}
@@ -152,6 +156,7 @@ func padSelector(selector []byte) [4]frontend.Variable {
 // buildWitness constructs the full circuit witness for a given scenario.
 func buildWitness(policyLines []PolicyLine,
 	activePolicyIndex int,
+	from *big.Int,
 	to *big.Int,
 	value *big.Int,
 	calldata []byte,
@@ -166,12 +171,16 @@ func buildWitness(policyLines []PolicyLine,
 	paddedCalldata := make([]byte, MAX_DATA_BYTES)
 	copy(paddedCalldata, calldata)
 
+	fromForSigning := from.Bytes()
+	fromPadded := make([]byte, 20)
+	copy(fromPadded[20-len(fromForSigning):], fromForSigning)
+
 	toForSigning := to.Bytes()
 	toPadded := make([]byte, 20)
 	copy(toPadded[20-len(toForSigning):], toForSigning)
 	valueForSigning := make([]byte, 16)
 	value.FillBytes(valueForSigning)
-	messageBytes := bytes.Join([][]byte{toPadded, valueForSigning, paddedCalldata}, nil)
+	messageBytes := bytes.Join([][]byte{fromPadded, toPadded, valueForSigning, paddedCalldata}, nil)
 	messageToSign := eth_crypto.Keccak256(messageBytes)
 
 	// The final call hash is what gets verified in the circuit.
@@ -246,7 +255,12 @@ func buildWitness(policyLines []PolicyLine,
 	activePolicyLine := policyLines[activePolicyIndex]
 	activePolicySelector := padSelector(activePolicyLine.FunctionSelector)
 
-	var signerAddr, assetAddr, amountMax frontend.Variable
+	var destAddr, signerAddr, assetAddr, amountMax frontend.Variable
+	if activePolicyLine.DestinationAddr != nil {
+		destAddr = activePolicyLine.DestinationAddr
+	} else {
+		destAddr = 0
+	}
 	if activePolicyLine.SignerAddr != nil {
 		signerAddr = activePolicyLine.SignerAddr
 	} else {
@@ -268,6 +282,7 @@ func buildWitness(policyLines []PolicyLine,
 		PolicyMerkleRoot: to32FrontendVariable(merkleRoot),
 		GroupsHash:       to32FrontendVariable(groupHash[:]),
 		AllowHash:        to32FrontendVariable(allowHash[:]),
+		From:             from,
 		To:               to,
 		Value:            value,
 		Data:             toDataArray(calldata),
@@ -279,6 +294,7 @@ func buildWitness(policyLines []PolicyLine,
 			TxType:           activePolicyLine.TxType,
 			DestinationTag:   activePolicyLine.DestinationTag,
 			DestinationIdx:   activePolicyLine.DestinationIdx,
+			DestinationAddr:  destAddr,
 			SignerTag:        activePolicyLine.SignerTag,
 			SignerAddr:       signerAddr,
 			SignerGroupIdx:   activePolicyLine.SignerGroupIdx,

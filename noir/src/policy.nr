@@ -13,6 +13,7 @@ pub global TX_TYPE_CONTRACT_CALL: Field = 1;
 pub global DEST_PATTERN_ANY: Field = 0;
 pub global DEST_PATTERN_GROUP: Field = 1;
 pub global DEST_PATTERN_ALLOWLIST: Field = 2;
+pub global DEST_PATTERN_EXACT: Field = 3;
 
 // Constants for SignerPattern variants
 pub global SIGNER_PATTERN_ANY: Field = 0;
@@ -30,6 +31,9 @@ pub struct DestinationPattern {
     pub kind: Field,
     // Used for Group and Allowlist kinds. Represents the keccak256 hash of the name.
     pub name_hash: Field,
+    // For Exact kind: the destination address to match against.
+    // Ignored for ANY/GROUP/ALLOWLIST.
+    pub address: [u8; 20],
 }
 
 // Represents the SignerPattern enum.
@@ -69,6 +73,7 @@ pub struct PolicyLine {
 // A user's action to be verified against a policy.
 // Dynamic vectors from Rust are converted to fixed-size arrays.
 pub struct UserAction {
+    pub from: [u8; 20],
     pub to: [u8; 20],
     pub value: Field, // u128 for native token value.
     // Calldata for the transaction.

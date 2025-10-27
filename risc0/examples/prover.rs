@@ -6,7 +6,7 @@ use clap::Parser;
 use dotenv::dotenv;
 use k256::ecdsa::SigningKey;
 use risc0_zkvm::sha::Digestible;
-use risc0_zkvm::{default_prover, ExecutorEnv, InnerReceipt, Prover};
+use risc0_zkvm::{default_prover, ExecutorEnv, InnerReceipt};
 use rs_merkle::MerkleTree;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -16,8 +16,6 @@ use tiny_keccak::{Hasher, Keccak};
 use tracing_subscriber::EnvFilter;
 use zkguard_core::{hash_policy_line_for_merkle_tree, MerklePath, Sha256MerkleHasher, UserAction};
 use zkguard_methods::{ZKGUARD_POLICY_ELF, ZKGUARD_POLICY_ID};
-
-mod onchain_verifier;
 
 sol! {
     struct PublicInput {
@@ -51,8 +49,6 @@ struct Args {
     private_keys: Vec<String>,
     #[clap(long)]
     nonce: u64,
-    #[clap(long)]
-    verify_onchain: bool,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -234,7 +230,6 @@ async fn run_prover(
     user_action: &UserAction,
     groups: &HashMap<String, Vec<[u8; 20]>>,
     allowlists: &HashMap<String, Vec<[u8; 20]>>,
-    verify_onchain_flag: bool,
 ) -> Result<()> {
     println!("ACTION_FROM=0x{}", hex::encode(user_action.from));
     println!("ACTION_TO=0x{}", hex::encode(user_action.to));
@@ -322,28 +317,6 @@ async fn run_prover(
     receipt.verify(ZKGUARD_POLICY_ID)?;
     println!("[{}] Verified!", policy_line.id);
 
-    if verify_onchain_flag {
-        println!("[{}] Verifying on-chain...", policy_line.id);
-        let private_key = std::env::var("WALLET_PRIV_KEY").expect("WALLET_PRIV_KEY must be set");
-        let eth_rpc_url = std::env::var("ETH_RPC_URL").expect("ETH_RPC_URL must be set");
-        let contract_address = std::env::var("MODULE_ADDRESS").expect("MODULE_ADDRESS must be set");
-
-        onchain_verifier::verify_onchain(
-            &private_key,
-            &eth_rpc_url,
-            &contract_address,
-            onchain_seal,
-            journal_bytes,
-            user_action.from.to_vec(),
-            user_action.to.to_vec(),
-            user_action.value,
-            user_action.data.clone(),
-            user_action.nonce,
-        )
-        .await?;
-        println!("[{}] Verified on-chain!", policy_line.id);
-    }
-
     Ok(())
 }
 
@@ -421,6 +394,7 @@ async fn main() -> Result<()> {
 
     let mut signatures: Vec<Vec<u8>> = Vec::new();
     for pk_hex in &args.private_keys {
+        println!("{}", pk_hex);
         let sk =
             SigningKey::from_slice(&hex::decode(pk_hex.strip_prefix("0x").unwrap_or(pk_hex))?)?;
         let (signature, recovery_id) = sk.sign_prehash_recoverable(&message_hash)?;
@@ -437,7 +411,6 @@ async fn main() -> Result<()> {
         &user_action,
         &groups,
         &allowlists,
-        args.verify_onchain,
     )
     .await?;
 
