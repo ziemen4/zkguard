@@ -183,7 +183,7 @@ func getExampleAssignment(exampleName string) (ZKGuardCircuit, error) {
 		return ZKGuardCircuit{}, fmt.Errorf("unknown example name: %s", exampleName)
 	}
 
-	return buildWitness(policyLines, 0, to, value, calldata, signers, groups, groupSizes, groupHash, allowLists, allowSizes, allowHash), nil
+	return buildWitness(policyLines, 0, fromAddress, to, value, calldata, signers, groups, groupSizes, groupHash, allowLists, allowSizes, allowHash), nil
 }
 
 func BenchmarkZKGuard(b *testing.B) {

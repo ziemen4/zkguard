@@ -2,8 +2,8 @@ mod policy;
 
 use policy::{
     ASSET_PATTERN_ANY, ASSET_PATTERN_EXACT, AssetPattern, DEST_PATTERN_ALLOWLIST, DEST_PATTERN_ANY,
-    DEST_PATTERN_EXACT, DEST_PATTERN_GROUP, DestinationPattern, MAX_CALLDATA_SIZE, MAX_SIGNATURES, PolicyLine,
-    SIGNATURE_SIZE, SIGNER_PATTERN_ANY, SIGNER_PATTERN_EXACT, SIGNER_PATTERN_GROUP,
+    DEST_PATTERN_EXACT, DEST_PATTERN_GROUP, DestinationPattern, MAX_CALLDATA_SIZE, MAX_SIGNATURES,
+    PolicyLine, SIGNATURE_SIZE, SIGNER_PATTERN_ANY, SIGNER_PATTERN_EXACT, SIGNER_PATTERN_GROUP,
     SIGNER_PATTERN_THRESHOLD, SignerPattern, TX_TYPE_CONTRACT_CALL, TX_TYPE_TRANSFER, UserAction,
 };
 
@@ -544,7 +544,6 @@ pub fn main(
     }
 
     let call_hash = hash_user_action(user_action);
-    // Per Risc0 spec, commit the Merkle root as the policy hash
     let policy_hash = policy_merkle_root;
     let groups_hash = hash_sets(ctx.groups, ctx.group_name_hashes);
     let allow_hash = hash_sets(ctx.allowlists, ctx.allowlist_name_hashes);
