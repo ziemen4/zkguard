@@ -38,16 +38,30 @@ Policies are defined using Rust structs and enums located in the `zkguard_core` 
 The project uses the Rust toolchain and Cargo for building and running. The `prover` example serves as the main entry point for generating proofs for various predefined DAO security policies.
 
 ### Prerequisites
+
 * Rust, configured with the toolchain specified in `rust-toolchain.toml`. If you have `rustup` installed, it will automatically use the correct version when you are in this directory.
-    ```bash
-    rustup toolchain install 1.86.0
-    ```
+
+```bash
+rustup toolchain install 1.86.0
+```
+
+* Install Risc Zero’s toolchain manager
+
+```sh
+cargo install rzup
+```
+
+* Install Risc Zero Rust toolchain
+
+```sh
+rzup install rust
+```
 
 ### Running Examples
 
 To run any of the examples, use the `prover` example runner from the `risc0` directory.
 
-A full list of available examples can be found in `examples/README.md`. Each run will execute the host program, which invokes the zkVM to prove the action, and finally verifies the generated proof.
+A full list of available examples can be found [here](./examples/README.md) in `examples/README.md`. Each run will execute the host program, which invokes the zkVM to prove the action, and finally verifies the generated proof.
 
 ## ⛓️ On-Chain Verification
 
