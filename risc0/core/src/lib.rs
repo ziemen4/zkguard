@@ -3,7 +3,7 @@ extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;
 use bincode::Options;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Deserializer};
 use risc0_zkvm::sha::{Impl, Sha256};
 use rs_merkle::Hasher as MerkleHasher;
 use tiny_keccak::Keccak;
@@ -110,6 +110,7 @@ pub enum DestinationPattern {
     /// Matches any address.
     Any,
     /// Matches a specific address.
+    #[serde(deserialize_with = "from_hex_address")]
     Exact([u8; 20]),
     /// Matches if the address is contained in the named group.
     Group(String),
@@ -122,6 +123,7 @@ pub enum SignerPattern {
     /// Matches any signer.
     Any,
     /// Matches a specific address.
+    #[serde(deserialize_with = "from_hex_address")]
     Exact([u8; 20]),
     /// Matches if the signer is contained in the named group.
     Group(String),
@@ -134,8 +136,46 @@ pub enum AssetPattern {
     /// Wildcard – matches any asset.
     Any,
     /// Exact ERC-20 contract address or the pseudo-identifier for ETH.
+    #[serde(deserialize_with = "from_hex_address")]
     Exact([u8; 20]),
 }
+
+fn from_hex_address<'de, D>(deserializer: D) -> Result<[u8; 20], D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    let s = s.strip_prefix("0x").unwrap_or(&s);
+    let bytes = hex::decode(s).map_err(serde::de::Error::custom)?;
+    
+    let mut arr = [0u8; 20];
+    arr.copy_from_slice(&bytes);
+    Ok(arr)
+}
+
+fn from_hex_function_selector<'de, D>(deserializer: D) -> Result<Option<[u8; 4]>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let opt = Option::<String>::deserialize(deserializer)?;
+    match opt {
+        Some(s) => {
+            let s = s.strip_prefix("0x").unwrap_or(&s);
+            let bytes = hex::decode(s).map_err(serde::de::Error::custom)?;
+            if bytes.len() != 4 {
+                return Err(serde::de::Error::custom(format!(
+                    "expected 4 bytes for function selector, got {}",
+                    bytes.len()
+                )));
+            }
+            let mut arr = [0u8; 4];
+            arr.copy_from_slice(&bytes);
+            Ok(Some(arr))
+        }
+        None => Ok(None),
+    }
+}
+
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ActionType {
@@ -155,6 +195,8 @@ pub struct PolicyLine {
     // ───────────────────────────────────────────────────────────────────────
     pub asset: AssetPattern,
     pub amount_max: Option<u128>,
+
+    #[serde(deserialize_with = "from_hex_function_selector")]
     pub function_selector: Option<[u8; 4]>,
 }
 
