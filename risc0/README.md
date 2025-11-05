@@ -51,10 +51,10 @@ rustup toolchain install 1.86.0
 cargo install rzup
 ```
 
-* Install Risc Zero Rust toolchain
+* Install Risc Zero components
 
 ```sh
-rzup install rust
+rzup install
 ```
 
 ### Running Examples
