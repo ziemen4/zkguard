@@ -35,7 +35,17 @@ Note on signatures: The circuit converts `{r||s||v}` (65 bytes) into `{r||s}` to
 
 ## ⚙️ Prerequisites
 
-- Noir toolchain
+- Noir toolchain installation [quickstart](https://noir-lang.org/docs/getting_started/quick_start)
+
+```bash
+# noir
+curl -L https://raw.githubusercontent.com/noir-lang/noirup/refs/heads/main/install | bash
+
+# barretenberg
+curl -L https://raw.githubusercontent.com/AztecProtocol/aztec-packages/refs/heads/next/barretenberg/bbup/install | bash
+bbup
+```
+
 - Python 3.10+ for input generation
   - `coincurve`, `eth-hash`, `toml` (see `requirements.txt`)
 
