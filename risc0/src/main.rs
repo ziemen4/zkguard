@@ -28,8 +28,9 @@ fn hash_user_action(ua: &UserAction) -> [u8; 32] {
     let mut h = Keccak::v256();
     // 2. Create an output buffer for the hash
     let mut output = [0u8; 32];
-
+    
     // 3. Update the hasher with data
+    h.update(&ua.from);
     h.update(&ua.to);
     h.update(&ua.value.to_be_bytes());
     h.update(&ua.data);
