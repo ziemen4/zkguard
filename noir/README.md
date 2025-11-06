@@ -12,9 +12,9 @@ This directory contains a Noir-based zk circuit that implements the ZKGuard poli
   - ECDSA secp256k1: Signature verification via Noir’s `std::ecdsa_secp256k1::verify_signature`.
 
 Key sources:
-- Circuit entrypoint: `auth-policy/noir/src/main.nr`
-- Types and constants: `auth-policy/noir/src/policy.nr`
-- Inputs generator: `auth-policy/noir/src/generate_prover_toml.py` (see `auth-policy/noir/src/README.md`)
+- Circuit entrypoint: `src/main.nr`
+- Types and constants: `src/policy.nr`
+- Inputs generator: `src/generate_prover_toml.py` (see `src/README.md`)
 
 ## 📜 Inputs and Outputs
 
@@ -71,7 +71,7 @@ If you change versions, re‑run compile/execute/prove/verify to confirm compati
 
 ## 🚀 How to Run
 
-All commands below run from `auth-policy/noir`.
+Run these commands.
 
 1) Generate inputs (Prover.toml)
 
