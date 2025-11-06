@@ -8,6 +8,7 @@ use risc0_zkvm::sha::{Impl, Sha256};
 use rs_merkle::Hasher as MerkleHasher;
 use tiny_keccak::Keccak;
 use sha2::Digest;
+
 ////////////////////////////////////////////////////////////////
 //  Public constants (grouped so callers can use `constants::*`)
 ////////////////////////////////////////////////////////////////
@@ -183,4 +184,18 @@ pub struct MerklePath {
 pub struct PublicInputs {
     root: [u8; 32],
     action: UserAction,
+}
+
+
+/// Util
+pub trait HexDecodeExt {
+    fn hex_decode(&self) -> Result<[u8; 20], hex::FromHexError>;
+}
+
+impl HexDecodeExt for &str {
+    fn hex_decode(&self) -> Result<[u8; 20], hex::FromHexError> {
+        let s = self.strip_prefix("0x").unwrap_or(self);
+        let bytes = hex::decode(s)?;
+        bytes.try_into().map_err(|_| hex::FromHexError::InvalidStringLength)
+    }
 }

@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use tiny_keccak::{Hasher, Keccak};
 use zkguard_core::{
     hash_policy_line_for_merkle_tree, AssetPattern, DestinationPattern, MerklePath, PolicyLine,
-    Sha256MerkleHasher, SignerPattern, TxType, UserAction,
+    Sha256MerkleHasher, SignerPattern, TxType, UserAction,HexDecodeExt
 };
 use zkguard_methods::{ZKGUARD_POLICY_ELF, ZKGUARD_POLICY_ID};
 
@@ -42,8 +42,72 @@ fn hash_user_action(ua: &UserAction) -> [u8; 32] {
     output
 }
 
+// Build policy rules and Merkle tree from inputs. Returns (rules, merkle_path, merkle_root).
+fn build_policy_and_merkle(
+    usdt_addr: [u8; 20],
+    usdc_addr: [u8; 20],
+    from_addr: [u8; 20],
+    amount: u128,
+) -> anyhow::Result<(Vec<PolicyLine>, MerklePath, [u8; 32])> {
+    // Construct policy rules
+    let rule_0 = PolicyLine {
+        id: 1,
+        tx_type: TxType::Transfer,
+        destination: DestinationPattern::Any, // no restriction
+        signer: SignerPattern::Threshold {
+            group: "Admins".to_string(),
+            threshold: 1,
+        },
+        asset: AssetPattern::Exact(usdt_addr),
+        amount_max: Some(amount), // max 1 USDT
+        function_selector: None,
+    };
+
+    let rule_1 = PolicyLine {
+        id: 2,
+        tx_type: TxType::Transfer,
+        destination: DestinationPattern::Allowlist("USDC-Allowlist".into()),
+        signer: SignerPattern::Any,            // any signer
+        asset: AssetPattern::Exact(usdc_addr), // only USDC
+        amount_max: None,                      // no limit
+        function_selector: None,
+    };
+
+    let rule_2 = PolicyLine {
+        id: 3,
+        tx_type: TxType::ContractCall,
+        destination: DestinationPattern::Any,
+        signer: SignerPattern::Exact(from_addr),
+        asset: AssetPattern::Any,
+        amount_max: None,
+        function_selector: Some([0x7f, 0xf3, 0x6a, 0xb5]), // swapExactETHForTokens
+    };
+
+    let rules = vec![rule_0, rule_1, rule_2];
+
+    // Build the Merkle Tree for the policy
+    let hashed_leaves = rules
+        .iter()
+        .map(hash_policy_line_for_merkle_tree)
+        .collect::<Vec<[u8; 32]>>();
+
+    let tree: MerkleTree<Sha256MerkleHasher> = MerkleTree::from_leaves(&hashed_leaves);
+    let proof = tree.proof(&[0]);
+    let path_hashes: Vec<[u8; 32]> = proof.proof_hashes().to_vec();
+
+    let merkle_path = MerklePath {
+        leaf_index: 0u64,
+        siblings: path_hashes.clone(),
+    };
+
+    let merkle_root: [u8; 32] = tree.root().expect("Merkle tree should have a root");
+
+    Ok((rules, merkle_path, merkle_root))
+}
+
 /// ERC‑20 transfer(address,uint256) function selector (big‑endian).
 const TRANSFER_SELECTOR: [u8; 4] = [0xa9, 0x05, 0x9c, 0xbb];
+
 
 fn main() -> Result<()> {
     dotenv().ok();
@@ -62,17 +126,11 @@ fn main() -> Result<()> {
     let from_addr: [u8; 20] = pk_hash[12..].try_into()?;
 
     // ---------------------------------------------------------------------
-    // Addresses
+    // Initialize contract addresses
     // ---------------------------------------------------------------------
-    let to_addr: [u8; 20] = hex::decode("12f3a2b4cC21881f203818aA1F78851Df974Bcc2")?
-        .try_into()
-        .unwrap();
-    let usdt_addr: [u8; 20] = hex::decode("dAC17F958D2ee523a2206206994597C13D831ec7")? // USDT
-        .try_into()
-        .unwrap();
-    let usdc_addr: [u8; 20] = hex::decode("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48")? // USDC
-        .try_into()
-        .unwrap();
+    let to_addr = "12f3a2b4cC21881f203818aA1F78851Df974Bcc2".hex_decode()?;
+    let usdt_addr = "dAC17F958D2ee523a2206206994597C13D831ec7".hex_decode()?;
+    let usdc_addr = "A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48".hex_decode()?;
 
     // ---------------------------------------------------------------------
     // Craft calldata for transfer(to, amount)
@@ -106,60 +164,15 @@ fn main() -> Result<()> {
     user_action.signatures = vec![sig_bytes];
 
     // ---------------------------------------------------------------------
-    // Build the *policy*
+    // Build the *policy* and Merkle tree
     // ---------------------------------------------------------------------
-    let rule_0 = PolicyLine {
-        id: 1,
-        tx_type: TxType::Transfer,
-        destination: DestinationPattern::Any, // no restriction
-        signer: SignerPattern::Threshold {
-            group: "Admins".to_string(),
-            threshold: 1,
-        },
-        asset: AssetPattern::Exact(usdt_addr),
-        amount_max: Some(amount), // max 1 USDT
-        function_selector: None,
-    };
-    let rule_1 = PolicyLine {
-        id: 2,
-        tx_type: TxType::Transfer,
-        destination: DestinationPattern::Allowlist("USDC-Allowlist".into()),
-        signer: SignerPattern::Any,            // any signer
-        asset: AssetPattern::Exact(usdc_addr), // only USDC
-        amount_max: None,                      // no limit
-        function_selector: None,
-    };
+    let (rules, merkle_path, merkle_root) = build_policy_and_merkle(usdt_addr, usdc_addr, from_addr, amount)?;
+    let rule_0 = &rules[0];
 
-    let rule_2 = PolicyLine {
-        id: 3,
-        tx_type: TxType::ContractCall,
-        destination: DestinationPattern::Any,
-        signer: SignerPattern::Exact(from_addr),
-        asset: AssetPattern::Any,
-        amount_max: None,
-        function_selector: Some([0x7f, 0xf3, 0x6a, 0xb5]), // swapExactETHForTokens
-    };
-
-    // Build the Merkle Tree for the policy
-    let hashed_leaves = vec![
-        hash_policy_line_for_merkle_tree(&rule_0),
-        hash_policy_line_for_merkle_tree(&rule_1),
-        hash_policy_line_for_merkle_tree(&rule_2),
-    ];
-    let tree: MerkleTree<Sha256MerkleHasher> = MerkleTree::from_leaves(&hashed_leaves);
-    let root = tree.root();
-    let proof = tree.proof(&[0]);
-    let path_hashes: Vec<[u8; 32]> = proof.proof_hashes().to_vec();
-
-    let merkle_path = MerklePath {
-        leaf_index: 0u64,
-        siblings: path_hashes.clone(),
-    };
-
-    // Insert signer into the "Admins" group
-    let merkle_root: [u8; 32] = root.expect("Merkle tree should have a root");
+    
     let mut groups: HashMap<String, Vec<[u8; 20]>> = HashMap::new();
     groups.insert("Admins".to_string(), vec![from_addr]);
+    
     let allows: HashMap<String, Vec<[u8; 20]>> = HashMap::new();
 
     // ---------------------------------------------------------------------
