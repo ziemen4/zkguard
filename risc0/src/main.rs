@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use tiny_keccak::{Hasher, Keccak};
 use zkguard_core::{
     hash_policy_line_for_merkle_tree, AssetPattern, DestinationPattern, MerklePath, PolicyLine,
-    Sha256MerkleHasher, SignerPattern, TxType, UserAction,HexDecodeExt
+    Sha256MerkleHasher, SignerPattern, TxType, UserAction, HexDecodeExt
 };
 use zkguard_methods::{ZKGUARD_POLICY_ELF, ZKGUARD_POLICY_ID};
 
@@ -43,12 +43,13 @@ fn hash_user_action(ua: &UserAction) -> [u8; 32] {
     output
 }
 
-// Build policy rules and Merkle tree from inputs. Returns (rules, merkle_path, merkle_root).
+// Build policy rules and Merkle tree from inputs and index. Returns (rules, merkle_path, merkle_root).
 fn build_policy_and_merkle(
     usdt_addr: [u8; 20],
     usdc_addr: [u8; 20],
     from_addr: [u8; 20],
     amount: u128,
+    leaf_index: usize,
 ) -> anyhow::Result<(Vec<PolicyLine>, MerklePath, [u8; 32])> {
     // Construct policy rules
     let rule_0 = PolicyLine {
@@ -93,11 +94,11 @@ fn build_policy_and_merkle(
         .collect::<Vec<[u8; 32]>>();
 
     let tree: MerkleTree<Sha256MerkleHasher> = MerkleTree::from_leaves(&hashed_leaves);
-    let proof = tree.proof(&[0]);
+    let proof = tree.proof(&[leaf_index]);
     let path_hashes: Vec<[u8; 32]> = proof.proof_hashes().to_vec();
 
     let merkle_path = MerklePath {
-        leaf_index: 0u64,
+        leaf_index: leaf_index as u64,
         siblings: path_hashes.clone(),
     };
 
@@ -167,8 +168,9 @@ fn main() -> Result<()> {
     // ---------------------------------------------------------------------
     // Build the *policy* and Merkle tree
     // ---------------------------------------------------------------------
-    let (rules, merkle_path, merkle_root) = build_policy_and_merkle(usdt_addr, usdc_addr, from_addr, amount)?;
-    let rule_0 = &rules[0];
+    let selected_index = 0;
+    let (rules, merkle_path, merkle_root) = build_policy_and_merkle(usdt_addr, usdc_addr, from_addr, amount, selected_index)?;
+    let selected_rule = &rules[selected_index];
 
     
     let mut groups: HashMap<String, Vec<[u8; 20]>> = HashMap::new();
@@ -181,7 +183,7 @@ fn main() -> Result<()> {
     // ---------------------------------------------------------------------
     let root_bytes = encode(&merkle_root.to_vec());
     let user_action_bytes = encode(&user_action);
-    let leaf_bytes = encode(&rule_0);
+    let leaf_bytes = encode(&selected_rule);
     let path_bytes = encode(&merkle_path);
     let group_bytes = encode(&groups);
     let allow_bytes = encode(&allows);
