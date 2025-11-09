@@ -79,7 +79,6 @@ fn hash_user_action(user_action: &UserAction) -> [u8; 32] {
 }
 
 /// Recovers the signer's address from a 65-byte (r||s||v) Ethereum-style
-/// Recovers the signer's address from a 65-byte (r||s||v) Ethereum-style
 /// signature. Returns `None` on failure.
 fn recover_signer(digest: &[u8; 32], signature: &[u8]) -> Option<[u8; 20]> {
     if signature.len() != 65 {

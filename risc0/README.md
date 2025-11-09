@@ -8,7 +8,7 @@ This approach provides significant flexibility, allowing for complex, expressive
 
 The zkVM model separates the program into two parts: a **host** and a **guest**.
 
-* **Host Program** (`examples/dao_prover.rs`): This is an untrusted program that runs on a standard machine. Its primary role is to prepare all the necessary inputs for the proof. This includes loading the user's action, the specific policy rule that allows it, the corresponding Merkle proof, and any required context like address groups and allow-lists. It then invokes the guest program within the zkVM.
+* **Host Program** (`examples/prover.rs`): This is an untrusted program that runs on a standard machine. Its primary role is to prepare all the necessary inputs for the proof. This includes loading the user's action, the specific policy rule that allows it, the corresponding Merkle proof, and any required context like address groups and allow-lists. It then invokes the guest program within the zkVM.
 
 * **Guest Program** (`methods/guest/src/bin/zkguard_policy.rs`): This is the trusted program whose execution is proven. It runs inside the Risc0 zkVM. The guest receives the inputs from the host and performs the complete two-part verification:
     1.  **Proof of Membership**: It verifies that the provided `PolicyLine` and `MerklePath` correctly compute to the trusted `Merkle Root`. This cryptographically proves that the rule is an authentic part of the established policy set.
