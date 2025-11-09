@@ -69,19 +69,6 @@
     "function_selector": null
   },
   {
-    "id": 7,
-    "tx_type": "ContractCall",
-    "destination": {
-      "Allowlist": "ApprovedDEXs"
-    },
-    "signer": {
-      "Exact": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
-    },
-    "asset": "Any",
-    "amount_max": null,
-    "function_selector": "0x7ff36ab5"
-  },
-  {
     "id": 6,
     "tx_type": "Transfer",
     "destination": {
@@ -95,6 +82,19 @@
     },
     "amount_max": 10000000000,
     "function_selector": null
+  },
+  {
+    "id": 7,
+    "tx_type": "ContractCall",
+    "destination": {
+      "Allowlist": "ApprovedDEXs"
+    },
+    "signer": {
+      "Exact": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+    },
+    "asset": "Any",
+    "amount_max": null,
+    "function_selector": "0x7ff36ab5"
   },
   {
     "id": 8,
