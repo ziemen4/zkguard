@@ -8,13 +8,12 @@ use k256::ecdsa::SigningKey;
 use risc0_zkvm::sha::Digestible;
 use risc0_zkvm::{default_prover, ExecutorEnv, InnerReceipt};
 use rs_merkle::MerkleTree;
-use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
 use tiny_keccak::{Hasher, Keccak};
 use tracing_subscriber::EnvFilter;
-use zkguard_core::{hash_policy_line_for_merkle_tree, MerklePath, Sha256MerkleHasher, UserAction};
+use zkguard_core::{hash_policy_line_for_merkle_tree, MerklePath, Sha256MerkleHasher, UserAction, PolicyLine};
 use zkguard_methods::{ZKGUARD_POLICY_ELF, ZKGUARD_POLICY_ID};
 
 sol! {
@@ -49,121 +48,6 @@ struct Args {
     private_keys: Vec<String>,
     #[clap(long)]
     nonce: u64,
-}
-
-#[derive(Deserialize, Debug, Clone)]
-pub struct PolicyLine {
-    pub id: u32,
-    pub tx_type: TxType,
-    pub destination: DestinationPattern,
-    pub signer: SignerPattern,
-    pub asset: AssetPattern,
-    pub amount_max: Option<String>,
-    pub function_selector: Option<String>,
-}
-
-impl From<PolicyLine> for zkguard_core::PolicyLine {
-    fn from(val: PolicyLine) -> Self {
-        zkguard_core::PolicyLine {
-            id: val.id,
-            tx_type: val.tx_type.into(),
-            destination: val.destination.into(),
-            signer: val.signer.into(),
-            asset: val.asset.into(),
-            amount_max: val.amount_max.map(|s| s.parse::<u128>().unwrap()),
-            function_selector: val.function_selector.map(|s| {
-                let s = s.strip_prefix("0x").unwrap_or(&s);
-                let mut arr = [0u8; 4];
-                arr.copy_from_slice(&hex::decode(s).unwrap());
-                arr
-            }),
-        }
-    }
-}
-
-#[derive(Deserialize, Debug, Clone)]
-pub enum TxType {
-    Transfer,
-    ContractCall,
-}
-
-impl From<TxType> for zkguard_core::TxType {
-    fn from(val: TxType) -> Self {
-        match val {
-            TxType::Transfer => zkguard_core::TxType::Transfer,
-            TxType::ContractCall => zkguard_core::TxType::ContractCall,
-        }
-    }
-}
-
-#[derive(Deserialize, Debug, Clone)]
-pub enum DestinationPattern {
-    Any,
-    Exact(String),
-    Group(String),
-    Allowlist(String),
-}
-
-impl From<DestinationPattern> for zkguard_core::DestinationPattern {
-    fn from(val: DestinationPattern) -> Self {
-        match val {
-            DestinationPattern::Any => zkguard_core::DestinationPattern::Any,
-            DestinationPattern::Exact(addr) => {
-                let addr = addr.strip_prefix("0x").unwrap_or(&addr);
-                let mut arr = [0u8; 20];
-                arr.copy_from_slice(&hex::decode(addr).unwrap());
-                zkguard_core::DestinationPattern::Exact(arr)
-            }
-            DestinationPattern::Group(s) => zkguard_core::DestinationPattern::Group(s),
-            DestinationPattern::Allowlist(s) => zkguard_core::DestinationPattern::Allowlist(s),
-        }
-    }
-}
-
-#[derive(Deserialize, Debug, Clone)]
-pub enum SignerPattern {
-    Any,
-    Exact(String),
-    Group(String),
-    Threshold { group: String, threshold: u8 },
-}
-
-impl From<SignerPattern> for zkguard_core::SignerPattern {
-    fn from(val: SignerPattern) -> Self {
-        match val {
-            SignerPattern::Any => zkguard_core::SignerPattern::Any,
-            SignerPattern::Exact(s) => {
-                let s = s.strip_prefix("0x").unwrap_or(&s);
-                let mut arr = [0u8; 20];
-                arr.copy_from_slice(&hex::decode(s).unwrap());
-                zkguard_core::SignerPattern::Exact(arr)
-            }
-            SignerPattern::Group(s) => zkguard_core::SignerPattern::Group(s),
-            SignerPattern::Threshold { group, threshold } => {
-                zkguard_core::SignerPattern::Threshold { group, threshold }
-            }
-        }
-    }
-}
-
-#[derive(Deserialize, Debug, Clone)]
-pub enum AssetPattern {
-    Any,
-    Exact(String),
-}
-
-impl From<AssetPattern> for zkguard_core::AssetPattern {
-    fn from(val: AssetPattern) -> Self {
-        match val {
-            AssetPattern::Any => zkguard_core::AssetPattern::Any,
-            AssetPattern::Exact(s) => {
-                let s = s.strip_prefix("0x").unwrap_or(&s);
-                let mut arr = [0u8; 20];
-                arr.copy_from_slice(&hex::decode(s).unwrap());
-                zkguard_core::AssetPattern::Exact(arr)
-            }
-        }
-    }
 }
 
 fn encode<T: serde::Serialize>(data: &T) -> Vec<u8> {
@@ -339,10 +223,12 @@ async fn main() -> Result<()> {
     let policy_file = File::open(args.policy_file)?;
     let reader = BufReader::new(policy_file);
     let json_policy: Vec<PolicyLine> = serde_json::from_reader(reader)?;
-    let policy: Vec<zkguard_core::PolicyLine> = json_policy
+     
+    let policy: Vec<PolicyLine> = json_policy
         .into_iter()
         .map(|policy| policy.into())
         .collect();
+  
 
     let groups_file = File::open(args.groups_file)?;
     let reader = BufReader::new(groups_file);
