@@ -12,9 +12,9 @@ This directory contains a Noir-based zk circuit that implements the ZKGuard poli
   - ECDSA secp256k1: Signature verification via Noir’s `std::ecdsa_secp256k1::verify_signature`.
 
 Key sources:
-- Circuit entrypoint: `auth-policy/noir/src/main.nr`
-- Types and constants: `auth-policy/noir/src/policy.nr`
-- Inputs generator: `auth-policy/noir/src/generate_prover_toml.py` (see `auth-policy/noir/src/README.md`)
+- Circuit entrypoint: `src/main.nr`
+- Types and constants: `src/policy.nr`
+- Inputs generator: `src/generate_prover_toml.py` (see `src/README.md`)
 
 ## 📜 Inputs and Outputs
 
@@ -35,7 +35,17 @@ Note on signatures: The circuit converts `{r||s||v}` (65 bytes) into `{r||s}` to
 
 ## ⚙️ Prerequisites
 
-- Noir toolchain
+- Noir toolchain installation [quickstart](https://noir-lang.org/docs/getting_started/quick_start)
+
+```bash
+# noir
+curl -L https://raw.githubusercontent.com/noir-lang/noirup/refs/heads/main/install | bash
+
+# barretenberg
+curl -L https://raw.githubusercontent.com/AztecProtocol/aztec-packages/refs/heads/next/barretenberg/bbup/install | bash
+bbup
+```
+
 - Python 3.10+ for input generation
   - `coincurve`, `eth-hash`, `toml` (see `requirements.txt`)
 
@@ -71,7 +81,7 @@ If you change versions, re‑run compile/execute/prove/verify to confirm compati
 
 ## 🚀 How to Run
 
-All commands below run from `auth-policy/noir`.
+Run these commands.
 
 1) Generate inputs (Prover.toml)
 
