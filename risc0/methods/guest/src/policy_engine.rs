@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 // Use the standard `tiny-keccak` crate. The [patch] in Cargo.toml will accelerate it.
 use tiny_keccak::{Hasher, Keccak};
 use zkguard_core::{
-    AssetPattern, DestinationPattern, PolicyLine, SignerPattern, TxType, UserAction, ETH_ASSET,
+    AssetPattern, DestinationPattern, PolicyLine, SignerPattern, TxType, UserAction, ETH_ASSET, hash_user_action_for_signing,
 };
 
 /*───────────────────────────────────────────────────────────────────────────*
@@ -63,21 +63,6 @@ fn match_destination(
     }
 }
 
-// Use the standard streaming API from `tiny-keccak`.
-fn hash_user_action(user_action: &UserAction) -> [u8; 32] {
-    let mut hasher = Keccak::v256();
-    let mut output = [0u8; 32];
-
-    hasher.update(&user_action.from);
-    hasher.update(&user_action.to);
-    hasher.update(&user_action.value.to_be_bytes());
-    hasher.update(&user_action.data);
-    hasher.update(&user_action.nonce.to_be_bytes());
-
-    hasher.finalize(&mut output);
-    output
-}
-
 /// Recovers the signer's address from a 65-byte (r||s||v) Ethereum-style
 /// signature. Returns `None` on failure.
 fn recover_signer(digest: &[u8; 32], signature: &[u8]) -> Option<[u8; 20]> {
@@ -115,7 +100,7 @@ fn match_signer(
     ua: &UserAction,
     groups: &HashMap<String, HashSet<[u8; 20]>>,
 ) -> bool {
-    let digest = hash_user_action(ua);
+    let digest = hash_user_action_for_signing(ua);
 
     match pattern {
         SignerPattern::Any => !ua.signatures.is_empty(), // Any signature is fine, but there must be at least one.

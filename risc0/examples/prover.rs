@@ -13,7 +13,7 @@ use std::fs::File;
 use std::io::BufReader;
 use tiny_keccak::{Hasher, Keccak};
 use tracing_subscriber::EnvFilter;
-use zkguard_core::{hash_policy_line_for_merkle_tree, MerklePath, Sha256MerkleHasher, UserAction, PolicyLine};
+use zkguard_core::{hash_policy_line_for_merkle_tree, MerklePath, Sha256MerkleHasher, UserAction, PolicyLine, hash_user_action_for_signing};
 use zkguard_methods::{ZKGUARD_POLICY_ELF, ZKGUARD_POLICY_ID};
 
 sol! {
@@ -55,18 +55,6 @@ fn encode<T: serde::Serialize>(data: &T) -> Vec<u8> {
         .with_fixint_encoding()
         .serialize(data)
         .unwrap()
-}
-
-fn hash_user_action(ua: &UserAction) -> [u8; 32] {
-    let mut h = Keccak::v256();
-    let mut output = [0u8; 32];
-    h.update(&ua.from);
-    h.update(&ua.to);
-    h.update(&ua.value.to_be_bytes());
-    h.update(&ua.data);
-    h.update(&ua.nonce.to_be_bytes());
-    h.finalize(&mut output);
-    output
 }
 
 fn decode_public_input(hex_blob: &str) -> anyhow::Result<PublicInput> {
@@ -276,7 +264,7 @@ async fn main() -> Result<()> {
         signatures: vec![],
     };
 
-    let message_hash = hash_user_action(&user_action);
+    let message_hash = hash_user_action_for_signing(&user_action);
 
     let mut signatures: Vec<Vec<u8>> = Vec::new();
     for pk_hex in &args.private_keys {
