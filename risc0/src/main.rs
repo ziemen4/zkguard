@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use tiny_keccak::{Hasher, Keccak};
 use zkguard_core::{
     hash_policy_line_for_merkle_tree, AssetPattern, DestinationPattern, MerklePath, PolicyLine,
-    Sha256MerkleHasher, SignerPattern, TxType, UserAction, HexDecodeExt
+    Sha256MerkleHasher, SignerPattern, TxType, UserAction, HexDecodeExt, hash_user_action_for_signing
 };
 use zkguard_methods::{ZKGUARD_POLICY_ELF, ZKGUARD_POLICY_ID};
 
@@ -20,27 +20,6 @@ fn encode<T: serde::Serialize>(data: &T) -> Vec<u8> {
         .with_fixint_encoding()
         .serialize(data)
         .unwrap()
-}
-
-// CHANGE: Updated to use the correct tiny-keccak API
-fn hash_user_action(ua: &UserAction) -> [u8; 32] {
-    // 1. Create a Keccak-256 hasher instance
-    let mut h = Keccak::v256();
-    // 2. Create an output buffer for the hash
-    let mut output = [0u8; 32];
-    
-    // 3. Update the hasher with data
-    h.update(&ua.from);
-    h.update(&ua.to);
-    h.update(&ua.value.to_be_bytes());
-    h.update(&ua.data);
-    h.update(&ua.nonce.to_be_bytes());
-
-    // 4. Finalize into the buffer
-    h.finalize(&mut output);
-
-    // 5. Return the result
-    output
 }
 
 // Build policy rules and Merkle tree from inputs and index. Returns (rules, merkle_path, merkle_root).
@@ -157,7 +136,7 @@ fn main() -> Result<()> {
     };
 
     // Sign the Keccak256 hash of the action
-    let message_hash = hash_user_action(&user_action);
+    let message_hash = hash_user_action_for_signing(&user_action);
     let (signature, recovery_id) = sk.sign_prehash_recoverable(&message_hash)?;
 
     // Append the recovery ID to the 64-byte signature to form the 65-byte Ethereum signature

@@ -6,14 +6,12 @@ use risc0_zkvm::guest::{entry, env};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use zkguard_core::{MerklePath, PolicyLine, UserAction};
+use zkguard_core::{MerklePath, PolicyLine, UserAction, hash_abi_encoded_user_action};
 use zkguard_guest::policy_engine::run_policy_checks;
 
 // Alloy: Solidity ABI definitions/encoding and Ethereum primitive types
-use alloy_primitives::{Address, U256, B256, Bytes};
-use alloy_sol_types::{sol, SolValue};   
-
-use tiny_keccak::{Hasher, Keccak};
+use alloy_primitives::{B256};
+use alloy_sol_types::{sol, SolValue};
 
 // Solidity ABI encoding for public input
 sol! {
@@ -29,25 +27,6 @@ sol! {
         uint256 value;
         bytes   data;
     }
-}
-
-fn keccak256(bytes: &[u8]) -> [u8; 32] {
-    let mut hasher = Keccak::v256();
-    let mut out = [0u8; 32];
-    hasher.update(bytes);
-    hasher.finalize(&mut out);
-    out
-}
-
-fn hash_user_action_keccak256(user_action: &UserAction) -> [u8; 32] {
-    let from = Address::from(user_action.from);
-    let to = Address::from(user_action.to);
-    let value = U256::from(user_action.value); // widen u128 -> U256
-    let nonce = U256::from(user_action.nonce); // widen u128 -> U256
-    let data = Bytes::from(user_action.data.clone());
-
-    let encoded = (from, to, value, nonce, data).abi_encode_params();
-    keccak256(&encoded)
 }
 
 /// Canonicalises a map of lists: sorts addresses ascending (dedup) and uses
@@ -205,7 +184,7 @@ fn main() {
     // Commit the hashes of the inputs used for verification
     // ──────────────────────────────────────────────────────────────────────
     // Compute keccak256(abi.encode(to, value, data))
-    let call_hash: [u8; 32] = hash_user_action_keccak256(&user_action);
+    let call_hash: [u8; 32] = hash_abi_encoded_user_action(&user_action);
 
     let root: [u8; 32] = policy_merkle_root
         .try_into()

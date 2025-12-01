@@ -6,8 +6,10 @@ use bincode::Options;
 use serde::{Deserialize, Serialize, Deserializer};
 use risc0_zkvm::sha::{Impl, Sha256};
 use rs_merkle::Hasher as MerkleHasher;
-use tiny_keccak::Keccak;
 use sha2::Digest;
+use tiny_keccak::{Hasher, Keccak};
+use alloy_primitives::{Address, U256, Bytes};
+use alloy_sol_types::{SolValue};   
 
 ////////////////////////////////////////////////////////////////
 //  Public constants (grouped so callers can use `constants::*`)
@@ -21,15 +23,13 @@ pub mod constants {
     pub const CONTRACTCALL_SELECTOR: [u8; 4] = [0xb6, 0x1d, 0x27, 0xf6];
 }
 
-////////////////////////////////////////////////////////////////
-//  Helper types & functions
-////////////////////////////////////////////////////////////////
+// ////////////////////////////////////////////////////////////////
+// //  Helper types & functions
+// ////////////////////////////////////////////////////////////////
 
 /// Keccak-256 convenience wrapper (available to both sides)
 pub fn keccak256(bytes: &[u8]) -> [u8; 32] {
     // Import the trait needed for the .update() and .finalize() methods
-    use tiny_keccak::Hasher;
-
     let mut k = Keccak::v256();
     k.update(bytes);
     let mut out = [0u8; 32];
@@ -240,4 +240,31 @@ impl HexDecodeExt for &str {
         let bytes = hex::decode(s)?;
         bytes.try_into().map_err(|_| hex::FromHexError::InvalidStringLength)
     }
+}
+
+/// Hashes a `UserAction` into a 32-byte digest suitable for signing.
+pub fn hash_user_action_for_signing(user_action: &UserAction) -> [u8; 32] {
+    let mut hasher = Keccak::v256();
+    let mut output = [0u8; 32];
+
+    hasher.update(&user_action.from);
+    hasher.update(&user_action.to);
+    hasher.update(&user_action.value.to_be_bytes());
+    hasher.update(&user_action.data);
+    hasher.update(&user_action.nonce.to_be_bytes());
+
+    hasher.finalize(&mut output);
+    output
+}
+
+/// Hashes a `UserAction` into a 32-byte digest using ABI encoding.
+pub fn hash_abi_encoded_user_action(user_action: &UserAction) -> [u8; 32] {
+    let from = Address::from(user_action.from);
+    let to = Address::from(user_action.to);
+    let value = U256::from(user_action.value); // widen u128 -> U256
+    let nonce = U256::from(user_action.nonce); // widen u128 -> U256
+    let data = Bytes::from(user_action.data.clone());
+
+    let encoded = (from, to, value, nonce, data).abi_encode_params();
+    keccak256(&encoded)
 }
