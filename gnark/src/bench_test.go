@@ -17,6 +17,10 @@ import (
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/frontend/cs/r1cs"
 	eth_crypto "github.com/ethereum/go-ethereum/crypto"
+
+	"io"
+	"os"
+	"path/filepath"
 )
 
 // --example flag to filter benchmarks. Usage: go test -bench . -example <name>
@@ -186,6 +190,114 @@ func getExampleAssignment(exampleName string) (ZKGuardCircuit, error) {
 	return buildWitness(policyLines, 0, fromAddress, to, value, calldata, signers, groups, groupSizes, groupHash, allowLists, allowSizes, allowHash), nil
 }
 
+const (
+	setupCacheDir  = "keys"
+	provingKeyFile = "zkguard_groth16_pk.bin"
+	verifyKeyFile  = "zkguard_groth16_vk.bin"
+)
+
+// hasCachedSetup returns true if both pk/vk files exist.
+func hasCachedSetup() bool {
+	pkPath := filepath.Join(setupCacheDir, provingKeyFile)
+	vkPath := filepath.Join(setupCacheDir, verifyKeyFile)
+
+	if _, err := os.Stat(pkPath); err != nil {
+		return false
+	}
+	if _, err := os.Stat(vkPath); err != nil {
+		return false
+	}
+	return true
+}
+
+// saveSetup writes the proving and verifying keys to disk so future runs can reuse them.
+func saveSetup(pk groth16.ProvingKey, vk groth16.VerifyingKey) error {
+	if err := os.MkdirAll(setupCacheDir, 0o755); err != nil {
+		return fmt.Errorf("creating setup cache dir: %w", err)
+	}
+
+	pkPath := filepath.Join(setupCacheDir, provingKeyFile)
+	vkPath := filepath.Join(setupCacheDir, verifyKeyFile)
+
+	// gnark keys implement io.WriterTo on the concrete types behind the interface
+	type writerTo interface {
+		WriteTo(io.Writer) (int64, error)
+	}
+
+	wpk, ok := pk.(writerTo)
+	if !ok {
+		return fmt.Errorf("proving key does not implement WriterTo")
+	}
+	wvk, ok := vk.(writerTo)
+	if !ok {
+		return fmt.Errorf("verifying key does not implement WriterTo")
+	}
+
+	fPK, err := os.Create(pkPath)
+	if err != nil {
+		return fmt.Errorf("creating proving key file: %w", err)
+	}
+	defer fPK.Close()
+	if _, err := wpk.WriteTo(fPK); err != nil {
+		return fmt.Errorf("writing proving key: %w", err)
+	}
+
+	fVK, err := os.Create(vkPath)
+	if err != nil {
+		return fmt.Errorf("creating verifying key file: %w", err)
+	}
+	defer fVK.Close()
+	if _, err := wvk.WriteTo(fVK); err != nil {
+		return fmt.Errorf("writing verifying key: %w", err)
+	}
+
+	return nil
+}
+
+// loadSetup reconstructs pk/vk from disk.
+// IMPORTANT: the circuit must be the same as when the keys were generated.
+func loadSetup() (groth16.ProvingKey, groth16.VerifyingKey, error) {
+	pkPath := filepath.Join(setupCacheDir, provingKeyFile)
+	vkPath := filepath.Join(setupCacheDir, verifyKeyFile)
+
+	type readerFrom interface {
+		ReadFrom(io.Reader) (int64, error)
+	}
+
+	// Concrete key instances bound to BN254 curve
+	pk := groth16.NewProvingKey(ecc.BN254)
+	vk := groth16.NewVerifyingKey(ecc.BN254)
+
+	rpk, ok := pk.(readerFrom)
+	if !ok {
+		return nil, nil, fmt.Errorf("proving key does not implement ReaderFrom")
+	}
+	rvk, ok := vk.(readerFrom)
+	if !ok {
+		return nil, nil, fmt.Errorf("verifying key does not implement ReaderFrom")
+	}
+
+	fPK, err := os.Open(pkPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("opening proving key file: %w", err)
+	}
+	defer fPK.Close()
+	if _, err := rpk.ReadFrom(fPK); err != nil {
+		return nil, nil, fmt.Errorf("reading proving key: %w", err)
+	}
+
+	fVK, err := os.Open(vkPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("opening verifying key file: %w", err)
+	}
+	defer fVK.Close()
+	if _, err := rvk.ReadFrom(fVK); err != nil {
+		return nil, nil, fmt.Errorf("reading verifying key: %w", err)
+	}
+
+	return pk, vk, nil
+}
+
 func BenchmarkZKGuard(b *testing.B) {
 	// --- 1. BENCHMARK ONE-TIME COSTS EFFICIENTLY ---
 	var circuit ZKGuardCircuit
@@ -212,8 +324,26 @@ func BenchmarkZKGuard(b *testing.B) {
 
 	// Manually run and report the benchmark for setup. This runs it once
 	// and gives us the proving/verifying keys for the next steps.
+	// NEW: Groth16_Setup will reuse pk/vk from disk when available.
 	b.Run("Groth16_Setup", func(b *testing.B) {
 		b.ReportAllocs()
+
+		if hasCachedSetup() {
+			start := time.Now()
+			var err error
+			pk, vk, err = loadSetup()
+			if err != nil {
+				b.Fatalf("failed to load cached setup: %v", err)
+			}
+			b.StopTimer()
+			totalTime := time.Since(start)
+			avgTime := totalTime / time.Duration(b.N)
+			b.Logf("Reused cached Groth16 setup from %q (pk, vk).", setupCacheDir)
+			b.Logf("-> Avg. load time per op: %s (ran %d iterations in %s)", avgTime.Round(time.Millisecond), b.N, totalTime.Round(time.Millisecond))
+			return
+		}
+
+		// No cached setup: run full Groth16.Setup once and write to disk
 		b.ResetTimer()
 		start := time.Now()
 		var err error
@@ -225,6 +355,12 @@ func BenchmarkZKGuard(b *testing.B) {
 		totalTime := time.Since(start)
 		avgTime := totalTime / time.Duration(b.N)
 		b.Logf("-> Avg. time per op: %s (ran %d iterations in %s)", avgTime.Round(time.Millisecond), b.N, totalTime.Round(time.Millisecond))
+
+		if err := saveSetup(pk, vk); err != nil {
+			b.Logf("WARNING: failed to save proving/verifying keys for reuse: %v", err)
+		} else {
+			b.Logf("Saved Groth16 proving/verifying keys to %q for future reuse.", setupCacheDir)
+		}
 	})
 
 	loc, _ := time.LoadLocation("UTC")
