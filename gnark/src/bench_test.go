@@ -201,12 +201,24 @@ func hasCachedSetup() bool {
 	pkPath := filepath.Join(setupCacheDir, provingKeyFile)
 	vkPath := filepath.Join(setupCacheDir, verifyKeyFile)
 
+	// log existence checks for easier debugging
 	if _, err := os.Stat(pkPath); err != nil {
+		if os.IsNotExist(err) {
+			fmt.Printf("[setup] proving key not found at %s\n", pkPath)
+		} else {
+			fmt.Printf("[setup] error stat'ing proving key %s: %v\n", pkPath, err)
+		}
 		return false
 	}
 	if _, err := os.Stat(vkPath); err != nil {
+		if os.IsNotExist(err) {
+			fmt.Printf("[setup] verifying key not found at %s\n", vkPath)
+		} else {
+			fmt.Printf("[setup] error stat'ing verifying key %s: %v\n", vkPath, err)
+		}
 		return false
 	}
+	fmt.Printf("[setup] found cached keys at %s (pk) and %s (vk)\n", pkPath, vkPath)
 	return true
 }
 
@@ -233,6 +245,7 @@ func saveSetup(pk groth16.ProvingKey, vk groth16.VerifyingKey) error {
 		return fmt.Errorf("verifying key does not implement WriterTo")
 	}
 
+	fmt.Printf("[setup] creating proving key file: %s\n", pkPath)
 	fPK, err := os.Create(pkPath)
 	if err != nil {
 		return fmt.Errorf("creating proving key file: %w", err)
@@ -242,6 +255,7 @@ func saveSetup(pk groth16.ProvingKey, vk groth16.VerifyingKey) error {
 		return fmt.Errorf("writing proving key: %w", err)
 	}
 
+	fmt.Printf("[setup] creating verifying key file: %s\n", vkPath)
 	fVK, err := os.Create(vkPath)
 	if err != nil {
 		return fmt.Errorf("creating verifying key file: %w", err)
@@ -251,6 +265,7 @@ func saveSetup(pk groth16.ProvingKey, vk groth16.VerifyingKey) error {
 		return fmt.Errorf("writing verifying key: %w", err)
 	}
 
+	fmt.Printf("[setup] saved proving and verifying keys to %s\n", setupCacheDir)
 	return nil
 }
 
@@ -282,6 +297,7 @@ func loadSetup() (groth16.ProvingKey, groth16.VerifyingKey, error) {
 		return nil, nil, fmt.Errorf("opening proving key file: %w", err)
 	}
 	defer fPK.Close()
+	fmt.Printf("[setup] opened proving key file: %s\n", pkPath)
 	if _, err := rpk.ReadFrom(fPK); err != nil {
 		return nil, nil, fmt.Errorf("reading proving key: %w", err)
 	}
@@ -291,10 +307,12 @@ func loadSetup() (groth16.ProvingKey, groth16.VerifyingKey, error) {
 		return nil, nil, fmt.Errorf("opening verifying key file: %w", err)
 	}
 	defer fVK.Close()
+	fmt.Printf("[setup] opened verifying key file: %s\n", vkPath)
 	if _, err := rvk.ReadFrom(fVK); err != nil {
 		return nil, nil, fmt.Errorf("reading verifying key: %w", err)
 	}
 
+	fmt.Printf("[setup] successfully loaded proving and verifying keys from %s\n", setupCacheDir)
 	return pk, vk, nil
 }
 

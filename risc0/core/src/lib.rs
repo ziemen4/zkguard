@@ -3,7 +3,7 @@ extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;
 use bincode::Options;
-use serde::{Deserialize, Serialize, Deserializer};
+use serde::{Deserialize, Serialize, Deserializer, Serializer, de::Error};
 use risc0_zkvm::sha::{Impl, Sha256};
 use rs_merkle::Hasher as MerkleHasher;
 use sha2::Digest;
@@ -111,8 +111,7 @@ pub enum DestinationPattern {
     /// Matches any address.
     Any,
     /// Matches a specific address.
-    #[serde(deserialize_with = "from_hex_address")]
-    Exact([u8; 20]),
+    Exact(#[serde(with = "serde_addr20")] [u8; 20]),
     /// Matches if the address is contained in the named group.
     Group(String),
     /// Matches if the address is contained in the named allow-list.
@@ -124,8 +123,7 @@ pub enum SignerPattern {
     /// Matches any signer.
     Any,
     /// Matches a specific address.
-    #[serde(deserialize_with = "from_hex_address")]
-    Exact([u8; 20]),
+    Exact(#[serde(with = "serde_addr20")] [u8; 20]),
     /// Matches if the signer is contained in the named group.
     Group(String),
     /// Matches if a threshold of signers from the named group have signed.
@@ -137,46 +135,100 @@ pub enum AssetPattern {
     /// Wildcard – matches any asset.
     Any,
     /// Exact ERC-20 contract address or the pseudo-identifier for ETH.
-    #[serde(deserialize_with = "from_hex_address")]
-    Exact([u8; 20]),
+    Exact(#[serde(with = "serde_addr20")] [u8; 20]),
 }
 
-fn from_hex_address<'de, D>(deserializer: D) -> Result<[u8; 20], D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let s = String::deserialize(deserializer)?;
-    let s = s.strip_prefix("0x").unwrap_or(&s);
-    let bytes = hex::decode(s).map_err(serde::de::Error::custom)?;
-    
-    let mut arr = [0u8; 20];
-    arr.copy_from_slice(&bytes);
-    Ok(arr)
-}
+/// Serde helpers for an Ethereum-style 20-byte address.
+/// - Human-readable formats (JSON/TOML/YAML): "0x..." hex string
+/// - Binary formats (bincode): raw [u8; 20]
+pub mod serde_addr20 {
+    use super::*;
 
-fn from_hex_function_selector<'de, D>(deserializer: D) -> Result<Option<[u8; 4]>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let opt = Option::<String>::deserialize(deserializer)?;
-    match opt {
-        Some(s) => {
+    pub fn serialize<S>(value: &[u8; 20], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        if serializer.is_human_readable() {
+            serializer.serialize_str(&format!("0x{}", hex::encode(value)))
+        } else {
+            value.serialize(serializer)
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<[u8; 20], D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        if deserializer.is_human_readable() {
+            let s = String::deserialize(deserializer)?;
             let s = s.strip_prefix("0x").unwrap_or(&s);
-            let bytes = hex::decode(s).map_err(serde::de::Error::custom)?;
-            if bytes.len() != 4 {
-                return Err(serde::de::Error::custom(format!(
-                    "expected 4 bytes for function selector, got {}",
+            let bytes = hex::decode(s).map_err(D::Error::custom)?;
+
+            if bytes.len() != 20 {
+                return Err(D::Error::custom(format!(
+                    "expected 20-byte hex address, got {} bytes",
                     bytes.len()
                 )));
             }
-            let mut arr = [0u8; 4];
+
+            let mut arr = [0u8; 20];
             arr.copy_from_slice(&bytes);
-            Ok(Some(arr))
+            Ok(arr)
+        } else {
+            <[u8; 20]>::deserialize(deserializer)
         }
-        None => Ok(None),
     }
 }
 
+/// Serde helpers for an optional 4-byte function selector.
+/// - Human-readable formats: "0x...." or null
+/// - Binary formats (bincode): Option<[u8; 4]> with raw bytes inside
+pub mod serde_opt_selector4 {
+    use super::*;
+
+    pub fn serialize<S>(value: &Option<[u8; 4]>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        if serializer.is_human_readable() {
+            match value {
+                Some(sel) => serializer.serialize_some(&format!("0x{}", hex::encode(sel))),
+                None => serializer.serialize_none(),
+            }
+        } else {
+            value.serialize(serializer)
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<[u8; 4]>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        if deserializer.is_human_readable() {
+            let opt = Option::<String>::deserialize(deserializer)?;
+            match opt {
+                Some(s) => {
+                    let s = s.strip_prefix("0x").unwrap_or(&s);
+                    let bytes = hex::decode(s).map_err(D::Error::custom)?;
+
+                    if bytes.len() != 4 {
+                        return Err(D::Error::custom(format!(
+                            "expected 4-byte function selector, got {} bytes",
+                            bytes.len()
+                        )));
+                    }
+
+                    let mut arr = [0u8; 4];
+                    arr.copy_from_slice(&bytes);
+                    Ok(Some(arr))
+                }
+                None => Ok(None),
+            }
+        } else {
+            Option::<[u8; 4]>::deserialize(deserializer)
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ActionType {
@@ -191,13 +243,10 @@ pub struct PolicyLine {
     pub tx_type: TxType,
     pub destination: DestinationPattern,
     pub signer: SignerPattern,
-    // ───────────────────────────────────────────────────────────────────────
-    // **Minimum** is intentionally omitted for the moment – future work.
-    // ───────────────────────────────────────────────────────────────────────
     pub asset: AssetPattern,
     pub amount_max: Option<u128>,
 
-    #[serde(deserialize_with = "from_hex_function_selector")]
+    #[serde(with = "serde_opt_selector4")]
     pub function_selector: Option<[u8; 4]>,
 }
 

@@ -1,5 +1,5 @@
 .env
-tree-and-cat.sh
-llm.txt
+*.sh
+*.txt
 TODO.md
 noir/target/*
