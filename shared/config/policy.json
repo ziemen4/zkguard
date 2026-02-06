@@ -1,0 +1,115 @@
+[
+  {
+    "id": 1,
+    "tx_type": "ContractCall",
+    "destination": {
+      "Exact": "0x5833115f8FFC62b708C3fD8287586C2f09Bc7624"
+    },
+    "signer": {
+      "Exact": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+    },
+    "asset": "Any",
+    "amount_max": null,
+    "function_selector": null
+  },
+  {
+    "id": 2,
+    "tx_type": "Transfer",
+    "destination": {
+      "Group": "TeamWallets"
+    },
+    "signer": {
+      "Exact": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+    },
+    "asset": {
+      "Exact": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+    },
+    "amount_max": null,
+    "function_selector": null
+  },
+  {
+    "id": 3,
+    "tx_type": "ContractCall",
+    "destination": {
+      "Allowlist": "ApprovedDEXs"
+    },
+    "signer": {
+      "Exact": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+    },
+    "asset": "Any",
+    "amount_max": null,
+    "function_selector": null
+  },
+  {
+    "id": 4,
+    "tx_type": "Transfer",
+    "destination": {
+      "Allowlist": "ApprovedLendingProtocols"
+    },
+    "signer": {
+      "Exact": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+    },
+    "asset": {
+      "Exact": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+    },
+    "amount_max": null,
+    "function_selector": null
+  },
+  {
+    "id": 5,
+    "tx_type": "ContractCall",
+    "destination": {
+      "Allowlist": "ApprovedLendingProtocols"
+    },
+    "signer": {
+      "Exact": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+    },
+    "asset": "Any",
+    "amount_max": null,
+    "function_selector": null
+  },
+  {
+    "id": 6,
+    "tx_type": "Transfer",
+    "destination": {
+      "Group": "TeamWallets"
+    },
+    "signer": {
+      "Exact": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+    },
+    "asset": {
+      "Exact": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+    },
+    "amount_max": 10000000000,
+    "function_selector": null
+  },
+  {
+    "id": 7,
+    "tx_type": "ContractCall",
+    "destination": {
+      "Allowlist": "ApprovedDEXs"
+    },
+    "signer": {
+      "Exact": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+    },
+    "asset": "Any",
+    "amount_max": null,
+    "function_selector": "0x7ff36ab5"
+  },
+  {
+    "id": 8,
+    "tx_type": "ContractCall",
+    "destination": {
+      "Allowlist": "ApprovedDEXs"
+    },
+    "signer": {
+      "Threshold": {
+        "group": "GovernanceSigners",
+        "threshold": 2
+      }
+    },
+    "asset": "Any",
+    "amount_max": null,
+    "function_selector": null
+  }
+]

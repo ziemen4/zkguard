@@ -1,5 +1,7 @@
 .env
 *.sh
+!risc0/examples/run_all_shared_examples.sh
+!ligero/examples/run_risc0_examples.sh
 *.txt
 TODO.md
 noir/target/*

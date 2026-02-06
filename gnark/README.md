@@ -62,20 +62,35 @@ The `main.go` file provides a CLI to run various DAO policy examples, while `ben
 ### Prerequisites
 * Go (version 1.23 or later)
 
-### Running Examples
+### Running Shared Examples
+This implementation now reads the same shared inputs as the other proving systems:
+
+* `../shared/config/policy.json`
+* `../shared/config/groups.json`
+* `../shared/config/allowlists.json`
+* `../shared/examples/scenarios.json`
+
 1.  **Install Dependencies**: Navigate to the `gnark` directory and fetch the required modules.
     ```bash
     go mod tidy
     ```
-2.  **Run an Example**: You can run a single example or all of them. The `--prove` flag controls whether to perform a quick logic check or generate a full ZK-SNARK proof.
+2.  **Run a Scenario**: The `--example` flag selects a scenario from `shared/examples/scenarios.json`. The `--prove` flag controls whether to perform a quick logic check or generate a full ZK-SNARK proof.
 
-    * **Run a specific example (logic check only):**
+    * **Run a specific scenario (logic check only):**
         ```bash
-        go run ./src/... -example advanced_signer_policies
+        go run ./src/... -example contributor_payments
         ```
-    * **Run all examples and generate full proofs:**
+    * **Run all shared scenarios and generate full proofs:**
         ```bash
         go run ./src/... -example all --prove
+        ```
+    * **Override shared config paths explicitly (optional):**
+        ```bash
+        go run ./src/... -example all --prove \
+          --policy-file ../shared/config/policy.json \
+          --groups-file ../shared/config/groups.json \
+          --allowlists-file ../shared/config/allowlists.json \
+          --scenarios-file ../shared/examples/scenarios.json
         ```
 
 ### Running Benchmarks
@@ -85,4 +100,3 @@ go test -bench . -benchmem
 ```
 
 This will execute the scenarios defined in bench_test.go and report the time and memory allocations for each phase.
-

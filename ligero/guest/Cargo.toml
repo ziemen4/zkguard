@@ -1,0 +1,11 @@
+[package]
+name = "zkguard-ligero-guest"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ligetron = { path = "../../../ligero-prover/sdk/rust" }
+
+[[bin]]
+name = "zkguard-ligero-guest"
+path = "src/main.rs"

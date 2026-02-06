@@ -8,23 +8,37 @@ The prover (`prover.rs`) takes a policy file, group/allowlist definitions, and t
 
 ## Configuration Files
 
-The security policy is defined across three JSON files:
+The canonical security policy is defined in the shared config directory:
 
-*   `policy.json`: Contains the list of all `PolicyLine` rules. Each rule has an `id` and defines what is allowed for a specific type of transaction.
-*   `groups.json`: Defines lists of addresses that can be referenced by policies. This is useful for managing collections of related accounts, like team members or governance signers.
-*   `allowlists.json`: Defines lists of addresses for approved on-chain contracts, such as trusted DEXs, lending protocols, or specific tokens.
+*   `../../shared/config/policy.json`: Contains the list of all `PolicyLine` rules. Each rule has an `id` and defines what is allowed for a specific type of transaction.
+*   `../../shared/config/groups.json`: Defines lists of addresses that can be referenced by policies. This is useful for managing collections of related accounts, like team members or governance signers.
+*   `../../shared/config/allowlists.json`: Defines lists of addresses for approved on-chain contracts, such as trusted DEXs, lending protocols, or specific tokens.
 
 ## How to Run the Prover
 
 You can run the prover from the `risc0` directory using a `cargo run` command. You must provide all the necessary details for the transaction you wish to prove.
 
+### Dev-mode safety (important on low-memory VPS)
+
+By default, `examples/prover.rs` now refuses to run unless `RISC0_DEV_MODE` is enabled.  
+This prevents accidental full zk proving (Groth16 path), which can OOM a small VPS.
+
+Use:
+
+```bash
+RISC0_DEV_MODE=1 cargo run --example prover -- \
+  ...
+```
+
+To intentionally run non-dev proving anyway, pass `--allow-non-dev` to the prover command.
+
 ### Generic Command Structure
 
 ```bash
 cargo run --example prover -- \
-    --policy-file examples/policy.json \
-    --groups-file examples/groups.json \
-    --allowlists-file examples/allowlists.json \
+    --policy-file ../shared/config/policy.json \
+    --groups-file ../shared/config/groups.json \
+    --allowlists-file ../shared/config/allowlists.json \
     --rule-id <RULE_ID> \
     --from <FROM_ADDRESS> \
     --to <TO_ADDRESS> \
@@ -72,9 +86,9 @@ This rule allows sending up to 5,000 USDC to a wallet in the `TeamWallets` group
 
 ```bash
 cargo run --example prover -- \
-    --policy-file examples/policy.json \
-    --groups-file examples/groups.json \
-    --allowlists-file examples/allowlists.json \
+    --policy-file ../shared/config/policy.json \
+    --groups-file ../shared/config/groups.json \
+    --allowlists-file ../shared/config/allowlists.json \
     --rule-id 2 \
     --from 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 \
     --to 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 \
@@ -92,9 +106,9 @@ This rule permits making a generic contract call to a DEX in the `ApprovedDEXs` 
 
 ```bash
 cargo run --example prover -- \
-    --policy-file examples/policy.json \
-    --groups-file examples/groups.json \
-    --allowlists-file examples/allowlists.json \
+    --policy-file ../shared/config/policy.json \
+    --groups-file ../shared/config/groups.json \
+    --allowlists-file ../shared/config/allowlists.json \
     --rule-id 3 \
     --from 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 \
     --to 0x3333333333333333333333333333333333333333 \
@@ -112,9 +126,9 @@ This rule restricts calls to an approved DEX to a *specific* function (`0x7ff36a
 
 ```bash
 cargo run --example prover -- \
-    --policy-file examples/policy.json \
-    --groups-file examples/groups.json \
-    --allowlists-file examples/allowlists.json \
+    --policy-file ../shared/config/policy.json \
+    --groups-file ../shared/config/groups.json \
+    --allowlists-file ../shared/config/allowlists.json \
     --rule-id 7 \
     --from 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 \
     --to 0x3333333333333333333333333333333333333333 \
@@ -130,9 +144,9 @@ This rule requires a 2-of-2 signature from the `GovernanceSigners` group.
 
 ```bash
 cargo run --example prover -- \
-    --policy-file examples/policy.json \
-    --groups-file examples/groups.json \
-    --allowlists-file examples/allowlists.json \
+    --policy-file ../shared/config/policy.json \
+    --groups-file ../shared/config/groups.json \
+    --allowlists-file ../shared/config/allowlists.json \
     --rule-id 8 \
     --from 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 \
     --to 0x3333333333333333333333333333333333333333 \
@@ -140,4 +154,10 @@ cargo run --example prover -- \
     --nonce 0 \
     --data 7ff36ab5 \
     --private-keys 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d
+```
+
+### Running all shared scenarios
+
+```bash
+RISC0_DEV_MODE=1 ./examples/run_all_shared_examples.sh
 ```

@@ -1,8 +1,13 @@
-# Prover.toml Generator with Safe ECDSA Placeholders
+# Prover.toml Generators
 
-This directory includes `generate_prover_toml.py`, a utility that creates `Prover.toml` inputs for the Noir circuit. It fixes a subtle but critical pitfall that can cause builder warnings and verification failure when unused signature slots are filled with zeros.
+This directory includes:
 
-Run commands in this folder (or from the project root using `python src/generate_prover_toml.py ...`).
+- `generate_prover_toml.py`: legacy scenario generator with embedded scenario/config data.
+- `generate_shared_prover_toml.py`: generator that reads canonical shared config from `../../shared/config/*.json` and scenario actions from `../../shared/examples/scenarios.json`.
+
+Both scripts fix a subtle but critical pitfall that can cause builder warnings and verification failure when unused signature slots are filled with zeros.
+
+Run commands in this folder (or from the project root using `python src/<script>.py ...`).
 
 ---
 
@@ -64,7 +69,21 @@ We then:
 
 ---
 
-## Running the generator
+## Running the shared-config generator
+
+Single scenario:
+
+```bash
+python src/generate_shared_prover_toml.py --scenario contributor_payments --out Prover.toml
+```
+
+All scenarios from `shared/examples/scenarios.json`:
+
+```bash
+python src/generate_shared_prover_toml.py --scenario all
+```
+
+## Running the legacy generator
 
 Single scenario:
 
@@ -101,4 +120,3 @@ Available scenarios:
 ## Version notes
 
 See the top-level Noir README (`auth-policy/noir/README.md`) for recommended tool versions.
-

@@ -86,10 +86,10 @@ Run these commands.
 
 1) Generate inputs (Prover.toml)
 
-Use the helper to build a consistent `Prover.toml` with safe placeholders and a Merkle singleton for the chosen rule.
+Use the shared-config helper to build a consistent `Prover.toml` with safe placeholders and a Merkle singleton for the chosen rule.
 
 ```bash
-python src/generate_prover_toml.py --scenario contributor_payments --key <hex_priv_no_0x> --out Prover.toml
+python src/generate_shared_prover_toml.py --scenario contributor_payments --out Prover.toml
 ```
 
 Available scenarios:
@@ -105,10 +105,16 @@ Examples:
 
 ```bash
 # 1-of-1 signer example
-python src/generate_prover_toml.py --scenario contributor_payments --key <hex> --out Prover.toml
+python src/generate_shared_prover_toml.py --scenario contributor_payments --out Prover.toml
 
 # 2-of-2 threshold signer example
-python src/generate_prover_toml.py --scenario advanced_signer_policies --key <hex1> --key2 <hex2> --out Prover.toml
+python src/generate_shared_prover_toml.py --scenario advanced_signer_policies --out Prover.toml
+```
+
+To generate all shared scenarios:
+
+```bash
+python src/generate_shared_prover_toml.py --scenario all
 ```
 
 2) Compile and execute the circuit
