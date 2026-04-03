@@ -69,7 +69,8 @@ Tested toolchain and crate versions for this repo:
 - Noir deps in `Nargo.toml` (pinned):
   - `keccak256` `v0.1.0`
   - `sha256` `v0.2.1`
-  - `ecrecover-noir` `v1.0.0`
+  - local `ecrecover-noir` path under `ecrecover`
+  - local `noir-array-helpers` path under `noir-array-helpers`
 
 Verify locally:
 
@@ -78,7 +79,19 @@ nargo --version
 bb --version
 ```
 
+
 If you change versions, re‑run compile/execute/prove/verify to confirm compatibility.
+
+## Local Dependencies
+
+This repo intentionally keeps two local Noir dependencies in this directory:
+
+- `ecrecover`
+- `noir-array-helpers`
+
+They are here because the upstream dependency chain did not compile cleanly for the toolchain/version combination used to validate this project. In particular, the upstream `noir-array-helpers` code hit a bit-width mismatch in the shift expression used during compilation, and simply bumping `ecrecover-noir` was not enough to remove that failure.
+
+Keeping these dependencies local gives this repo a clone-and-run path that is reproducible without ad hoc patching inside a package cache at build time. If upstream releases a compatible version later, these local copies can be removed and the dependencies can be switched back to upstream tags.
 
 ## 🚀 How to Run
 

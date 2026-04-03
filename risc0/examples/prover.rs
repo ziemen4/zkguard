@@ -11,9 +11,11 @@ use rs_merkle::MerkleTree;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
+use tiny_keccak::{Hasher, Keccak};
 use tracing_subscriber::EnvFilter;
 use zkguard_core::{hash_policy_line_for_merkle_tree, MerklePath, Sha256MerkleHasher, UserAction, PolicyLine, hash_user_action_for_signing};
 use zkguard_methods::{ZKGUARD_POLICY_ELF, ZKGUARD_POLICY_ID};
+use std::time::Instant;
 
 sol! {
     struct PublicInput {
@@ -47,26 +49,8 @@ struct Args {
     private_keys: Vec<String>,
     #[clap(long)]
     nonce: u64,
-    #[clap(
-        long,
-        default_value_t = false,
-        help = "Allow running without RISC0_DEV_MODE. This can be memory-intensive."
-    )]
-    allow_non_dev: bool,
-}
-
-fn parse_env_bool(name: &str) -> bool {
-    let Ok(raw) = std::env::var(name) else {
-        return false;
-    };
-    matches!(
-        raw.trim().to_ascii_lowercase().as_str(),
-        "1" | "true" | "yes" | "on"
-    )
-}
-
-fn dev_mode_enabled() -> bool {
-    parse_env_bool("RISC0_DEV_MODE")
+    #[clap(long, default_value_t = false)]
+    dev_mode: bool,
 }
 
 fn encode<T: serde::Serialize>(data: &T) -> Vec<u8> {
@@ -121,7 +105,7 @@ async fn run_prover(
     user_action: &UserAction,
     groups: &HashMap<String, Vec<[u8; 20]>>,
     allowlists: &HashMap<String, Vec<[u8; 20]>>,
-    expect_fake_receipt: bool,
+    dev_mode: bool,
 ) -> Result<()> {
     println!("ACTION_FROM=0x{}", hex::encode(user_action.from));
     println!("ACTION_TO=0x{}", hex::encode(user_action.to));
@@ -165,6 +149,7 @@ async fn run_prover(
     let allow_bytes = encode(allowlists);
 
     println!("[{}] Proving...", policy_line.id);
+    let prove_start = Instant::now();
 
     let receipt = tokio::task::spawn_blocking(move || {
         let env = ExecutorEnv::builder()
@@ -178,33 +163,32 @@ async fn run_prover(
             .unwrap();
 
         let prover = default_prover();
+        let verifier_ctx = if dev_mode {
+            risc0_zkvm::VerifierContext::default().with_dev_mode(true)
+        } else {
+            risc0_zkvm::VerifierContext::default()
+        };
+        let prover_opts = if dev_mode {
+            risc0_zkvm::ProverOpts::default().with_dev_mode(true)
+        } else {
+            risc0_zkvm::ProverOpts::groth16()
+        };
         prover
             .prove_with_ctx(
                 env,
-                &risc0_zkvm::VerifierContext::default(),
+                &verifier_ctx,
                 ZKGUARD_POLICY_ELF,
-                &risc0_zkvm::ProverOpts::groth16(),
+                &prover_opts,
             )
             .unwrap()
             .receipt
     })
     .await?;
+    let prove_ms = prove_start.elapsed().as_secs_f64() * 1000.0;
+    println!("BENCH_PROVE_MS={:.3}", prove_ms);
+    println!("DEV_MODE={}", dev_mode);
 
     let journal_bytes = receipt.journal.bytes.clone();
-    let got_fake_receipt = matches!(&receipt.inner, InnerReceipt::Fake(_));
-    println!(
-        "Receipt mode: {}",
-        if got_fake_receipt {
-            "FAKE (dev mode, no zk proof generated)"
-        } else {
-            "REAL (zk proving path)"
-        }
-    );
-    if expect_fake_receipt && !got_fake_receipt {
-        bail!(
-            "expected a fake receipt in dev mode, but got a proving receipt; refusing to continue"
-        );
-    }
     println!("Journal hex: 0x{}", hex::encode(&journal_bytes));
     println!("[{}] Proved!", policy_line.id);
 
@@ -220,7 +204,17 @@ async fn run_prover(
     ))?);
 
     println!("[{}] Verifying...", policy_line.id);
-    receipt.verify(ZKGUARD_POLICY_ID)?;
+    let verify_start = Instant::now();
+    if dev_mode {
+        receipt.verify_with_context(
+            &risc0_zkvm::VerifierContext::default().with_dev_mode(true),
+            ZKGUARD_POLICY_ID,
+        )?;
+    } else {
+        receipt.verify(ZKGUARD_POLICY_ID)?;
+    }
+    let verify_ms = verify_start.elapsed().as_secs_f64() * 1000.0;
+    println!("BENCH_VERIFY_MS={:.3}", verify_ms);
     println!("[{}] Verified!", policy_line.id);
 
     Ok(())
@@ -238,22 +232,8 @@ fn parse_hex_address(hex_str: &str) -> Result<[u8; 20]> {
 async fn main() -> Result<()> {
     dotenv().ok();
     let args = Args::parse();
-    let dev_mode = dev_mode_enabled();
-    let env_value = std::env::var("RISC0_DEV_MODE").unwrap_or_else(|_| "<unset>".to_string());
 
-    println!("RISC0_DEV_MODE={}", env_value);
-    if !dev_mode && !args.allow_non_dev {
-        bail!(
-            "refusing to run without dev mode. Set RISC0_DEV_MODE=1 (or true), or pass --allow-non-dev explicitly."
-        );
-    }
-    if dev_mode {
-        println!("Running in dev mode: fake receipts expected; zk proof generation is skipped.");
-    } else {
-        println!("Running in non-dev mode (--allow-non-dev): zk proving may be memory-intensive.");
-    }
-
-    let filter = EnvFilter::new("debug");
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
     let policy_file = File::open(args.policy_file)?;
@@ -333,7 +313,7 @@ async fn main() -> Result<()> {
         &user_action,
         &groups,
         &allowlists,
-        dev_mode,
+        args.dev_mode,
     )
     .await?;
 

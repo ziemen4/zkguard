@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
+	"log"
 	"math/big"
 	"testing"
 	"time"
@@ -191,6 +192,7 @@ func getExampleAssignment(exampleName string) (ZKGuardCircuit, error) {
 }
 
 const (
+	// Keys are expected under the package working directory (gnark/src/keys).
 	setupCacheDir  = "keys"
 	provingKeyFile = "zkguard_groth16_pk.bin"
 	verifyKeyFile  = "zkguard_groth16_vk.bin"
@@ -201,24 +203,15 @@ func hasCachedSetup() bool {
 	pkPath := filepath.Join(setupCacheDir, provingKeyFile)
 	vkPath := filepath.Join(setupCacheDir, verifyKeyFile)
 
-	// log existence checks for easier debugging
 	if _, err := os.Stat(pkPath); err != nil {
-		if os.IsNotExist(err) {
-			fmt.Printf("[setup] proving key not found at %s\n", pkPath)
-		} else {
-			fmt.Printf("[setup] error stat'ing proving key %s: %v\n", pkPath, err)
-		}
+		log.Printf("[bench] cached proving key not found at %s", pkPath)
 		return false
 	}
 	if _, err := os.Stat(vkPath); err != nil {
-		if os.IsNotExist(err) {
-			fmt.Printf("[setup] verifying key not found at %s\n", vkPath)
-		} else {
-			fmt.Printf("[setup] error stat'ing verifying key %s: %v\n", vkPath, err)
-		}
+		log.Printf("[bench] cached verifying key not found at %s", vkPath)
 		return false
 	}
-	fmt.Printf("[setup] found cached keys at %s (pk) and %s (vk)\n", pkPath, vkPath)
+	log.Printf("[bench] found cached Groth16 keys in %s", setupCacheDir)
 	return true
 }
 
@@ -245,7 +238,6 @@ func saveSetup(pk groth16.ProvingKey, vk groth16.VerifyingKey) error {
 		return fmt.Errorf("verifying key does not implement WriterTo")
 	}
 
-	fmt.Printf("[setup] creating proving key file: %s\n", pkPath)
 	fPK, err := os.Create(pkPath)
 	if err != nil {
 		return fmt.Errorf("creating proving key file: %w", err)
@@ -255,7 +247,6 @@ func saveSetup(pk groth16.ProvingKey, vk groth16.VerifyingKey) error {
 		return fmt.Errorf("writing proving key: %w", err)
 	}
 
-	fmt.Printf("[setup] creating verifying key file: %s\n", vkPath)
 	fVK, err := os.Create(vkPath)
 	if err != nil {
 		return fmt.Errorf("creating verifying key file: %w", err)
@@ -265,7 +256,6 @@ func saveSetup(pk groth16.ProvingKey, vk groth16.VerifyingKey) error {
 		return fmt.Errorf("writing verifying key: %w", err)
 	}
 
-	fmt.Printf("[setup] saved proving and verifying keys to %s\n", setupCacheDir)
 	return nil
 }
 
@@ -297,7 +287,7 @@ func loadSetup() (groth16.ProvingKey, groth16.VerifyingKey, error) {
 		return nil, nil, fmt.Errorf("opening proving key file: %w", err)
 	}
 	defer fPK.Close()
-	fmt.Printf("[setup] opened proving key file: %s\n", pkPath)
+	log.Printf("[setup] opened proving key file: %s", pkPath)
 	if _, err := rpk.ReadFrom(fPK); err != nil {
 		return nil, nil, fmt.Errorf("reading proving key: %w", err)
 	}
@@ -307,12 +297,12 @@ func loadSetup() (groth16.ProvingKey, groth16.VerifyingKey, error) {
 		return nil, nil, fmt.Errorf("opening verifying key file: %w", err)
 	}
 	defer fVK.Close()
-	fmt.Printf("[setup] opened verifying key file: %s\n", vkPath)
+	log.Printf("[setup] opened verifying key file: %s", vkPath)
 	if _, err := rvk.ReadFrom(fVK); err != nil {
 		return nil, nil, fmt.Errorf("reading verifying key: %w", err)
 	}
 
-	fmt.Printf("[setup] successfully loaded proving and verifying keys from %s\n", setupCacheDir)
+	log.Printf("[setup] successfully loaded proving and verifying keys from %s", setupCacheDir)
 	return pk, vk, nil
 }
 
@@ -345,6 +335,7 @@ func BenchmarkZKGuard(b *testing.B) {
 	// NEW: Groth16_Setup will reuse pk/vk from disk when available.
 	b.Run("Groth16_Setup", func(b *testing.B) {
 		b.ReportAllocs()
+		b.Logf("Groth16_Setup: checking for cached keys under %s", setupCacheDir)
 
 		if hasCachedSetup() {
 			start := time.Now()
@@ -362,6 +353,7 @@ func BenchmarkZKGuard(b *testing.B) {
 		}
 
 		// No cached setup: run full Groth16.Setup once and write to disk
+		b.Logf("Groth16_Setup: no cached keys found; running groth16.Setup and caching to %s", setupCacheDir)
 		b.ResetTimer()
 		start := time.Now()
 		var err error

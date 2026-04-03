@@ -1,0 +1,10 @@
+[package]
+authors = ["@colinnielsen"]
+compiler_version = ">=0.30.0"
+name = "ecrecover"
+notes = "AMDG"
+type = "lib"
+
+[dependencies]
+array_helpers = { path = "../noir-array-helpers" }
+keccak256 = { tag = "v0.1.0", git = "https://github.com/noir-lang/keccak256" }

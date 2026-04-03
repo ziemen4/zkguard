@@ -93,6 +93,20 @@ This implementation now reads the same shared inputs as the other proving system
           --scenarios-file ../shared/examples/scenarios.json
         ```
 
+### Reproducible Smoke Run
+
+For the repo-level reproducible `contributor_payments` proof path, use the checked-in runner:
+
+```bash
+../scripts/runners/run-gnark-contributor-payments.sh
+```
+
+This executes the benchmark-based proof flow that was used for smoke verification:
+
+```bash
+go test ./src -run '^$' -bench '^BenchmarkZKGuard$' -benchmem -benchtime=1x -count=1 -timeout 30m -example contributor_payments
+```
+
 ### Running Benchmarks
 To benchmark the performance of circuit compilation, setup, proving, and verification, run the following command:
 ```bash

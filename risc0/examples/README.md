@@ -16,26 +16,23 @@ The canonical security policy is defined in the shared config directory:
 
 ## How to Run the Prover
 
-You can run the prover from the `risc0` directory using a `cargo run` command. You must provide all the necessary details for the transaction you wish to prove.
+You can run the prover from the `risc0` directory using `cargo run` or the repo-level smoke runner. The default path is the real non-dev Groth16 proving flow.
 
-### Dev-mode safety (important on low-memory VPS)
+### Proving Modes
 
-By default, `examples/prover.rs` now refuses to run unless `RISC0_DEV_MODE` is enabled.  
-This prevents accidental full zk proving (Groth16 path), which can OOM a small VPS.
+- Default: non-dev proving and real receipt verification
+- Optional: dev mode for fast local checks with invalid receipts
 
-Use:
+To use dev mode, pass `--dev-mode` to `examples/prover.rs`, or set `RISC0_DEV_MODE=1` when using the repo runner.
 
-```bash
-RISC0_DEV_MODE=1 cargo run --example prover -- \
-  ...
-```
-
-To intentionally run non-dev proving anyway, pass `--allow-non-dev` to the prover command.
+Important:
+- dev mode does not generate production-valid receipts
+- the default path remains non-dev proving
 
 ### Generic Command Structure
 
 ```bash
-cargo run --example prover -- \
+cargo run --release --example prover -- \
     --policy-file ../shared/config/policy.json \
     --groups-file ../shared/config/groups.json \
     --allowlists-file ../shared/config/allowlists.json \
@@ -59,6 +56,21 @@ cargo run --example prover -- \
 *   `--nonce`: The nonce of the wallet performing the action.
 *   `--private-key`: The private key of the signer required by the policy rule. This key is used to sign the user action.
 *   `--verify-onchain`: (Optional) If included, the prover will attempt to send a transaction to the on-chain `ZKGuardSafeModule` to verify the proof and execute the action.
+*   `--dev-mode`: (Optional) Use dev mode for fast local proving with fake receipts. Verification still runs, but the receipt is not production-valid.
+
+### Reproducible Smoke Run
+
+From the repo root, the checked-in smoke runner is:
+
+```bash
+./scripts/runners/run-risc0-contributor-payments.sh
+```
+
+This uses the default non-dev proving path. To force the smoke runner into dev mode:
+
+```bash
+RISC0_DEV_MODE=1 ./scripts/runners/run-risc0-contributor-payments.sh
+```
 
 ### On-Chain Verification Setup
 
@@ -85,7 +97,7 @@ This rule allows sending up to 5,000 USDC to a wallet in the `TeamWallets` group
 *   **Calldata**: An ERC20 `transfer` call to the USDC contract (`0xA0b...B48`).
 
 ```bash
-cargo run --example prover -- \
+cargo run --release --example prover -- \
     --policy-file ../shared/config/policy.json \
     --groups-file ../shared/config/groups.json \
     --allowlists-file ../shared/config/allowlists.json \
@@ -105,7 +117,7 @@ This rule permits making a generic contract call to a DEX in the `ApprovedDEXs` 
 *   **Action**: Call a function with selector `0xddc4d724` (hash of "test()") on the approved DEX at `0x333...333`.
 
 ```bash
-cargo run --example prover -- \
+cargo run --release --example prover -- \
     --policy-file ../shared/config/policy.json \
     --groups-file ../shared/config/groups.json \
     --allowlists-file ../shared/config/allowlists.json \
@@ -125,7 +137,7 @@ This rule restricts calls to an approved DEX to a *specific* function (`0x7ff36a
 *   **Action**: Call the `swapExactETHForTokens` function (selector `0x7ff36ab5`) on the approved DEX.
 
 ```bash
-cargo run --example prover -- \
+cargo run --release --example prover -- \
     --policy-file ../shared/config/policy.json \
     --groups-file ../shared/config/groups.json \
     --allowlists-file ../shared/config/allowlists.json \
@@ -143,7 +155,7 @@ cargo run --example prover -- \
 This rule requires a 2-of-2 signature from the `GovernanceSigners` group.
 
 ```bash
-cargo run --example prover -- \
+cargo run --release --example prover -- \
     --policy-file ../shared/config/policy.json \
     --groups-file ../shared/config/groups.json \
     --allowlists-file ../shared/config/allowlists.json \
@@ -159,5 +171,5 @@ cargo run --example prover -- \
 ### Running all shared scenarios
 
 ```bash
-RISC0_DEV_MODE=1 ./examples/run_all_shared_examples.sh
+./examples/run_all_shared_examples.sh
 ```

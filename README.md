@@ -46,6 +46,22 @@ This implementation uses the **Risc0 zkVM**, a general-purpose zero-knowledge vi
 
 ➡️ **[See the `risc0` README for technical details and instructions.](./risc0/README.md)**
 
+## Reproducible Runs
+
+You can see an example of a reproducible run for the `contributor_payments` in each stack by running:
+
+```bash
+./scripts/runners/run-active-stack-smokes.sh
+```
+
+You can also run them individually:
+
+```bash
+./scripts/runners/run-gnark-contributor-payments.sh
+./scripts/runners/run-noir-contributor-payments.sh
+./scripts/runners/run-risc0-contributor-payments.sh
+```
+
 ## On-chain Implementation
 
 If you are looking for an end to end implementation, please see [Safe ZKGuard](https://github.com/ziemen4/safe-zkguard).

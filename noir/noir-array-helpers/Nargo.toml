@@ -1,0 +1,8 @@
+[package]
+name = "noir_array_helpers"
+authors = ["@colinnielsen"]
+compiler_version = ">=0.30.0"
+notes = "AMDG"
+type = "lib"
+
+[dependencies]
