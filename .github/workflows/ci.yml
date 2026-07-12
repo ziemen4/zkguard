@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  gnark-circuit:
+    name: gnark circuit checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: gnark
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: gnark/go.mod
+          cache-dependency-path: gnark/go.sum
+
+      - name: Check formatting
+        run: test -z "$(gofmt -l $(find src -type f -name '*.go'))"
+
+      - name: Run static checks
+        run: go vet ./src
+
+      - name: Check circuit constraints
+        run: go test ./src -run '^TestCircuitScenarios$' -count=1 -timeout 10m
+
+  noir-circuit:
+    name: Noir circuit checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Compile and execute Noir circuit
+        env:
+          ZKGUARD_NOIR_PROVE: "0"
+        run: ./scripts/runners/run-noir-contributor-payments.sh
+
+  risc0-circuit:
+    name: RISC0 circuit checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Execute RISC0 guest in dev mode
+        env:
+          RISC0_DEV_MODE: "1"
+        run: ./scripts/runners/run-risc0-contributor-payments.sh
