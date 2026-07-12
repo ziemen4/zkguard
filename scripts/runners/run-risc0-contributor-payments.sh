@@ -9,7 +9,7 @@ SMOKE_LOG="$ARTIFACT_DIR/risc0-contributor_payments.log"
 HOST_CACHE="/tmp/risc0-host"
 CARGO_HOME="$HOST_CACHE/cargo-home"
 RUSTUP_HOME="$HOST_CACHE/rustup-home"
-RZUP_HOME="/home/clawd/.risc0"
+RISC0_HOME="${RISC0_HOME:-${HOME}/.risc0}"
 DEV_MODE="${RISC0_DEV_MODE:-0}"
 
 mkdir -p "$ARTIFACT_DIR"
@@ -19,8 +19,8 @@ if [ ! -x "$CARGO_HOME/bin/rzup" ]; then
   docker run --rm -v "$HOST_CACHE:/out" rust:1.91 bash -lc "cp -a /usr/local/cargo /out/cargo-home && cp -a /usr/local/rustup /out/rustup-home"
 fi
 
-if [ ! -x "$RZUP_HOME/extensions/v3.0.5-cargo-risczero-x86_64-unknown-linux-gnu/r0vm" ]; then
-  export CARGO_HOME RUSTUP_HOME RZUP_HOME
+if [ ! -x "$RISC0_HOME/extensions/v3.0.5-cargo-risczero-x86_64-unknown-linux-gnu/r0vm" ]; then
+  export CARGO_HOME RUSTUP_HOME RISC0_HOME
   export PATH="$CARGO_HOME/bin:$PATH"
   cargo install rzup --locked
   rzup install
@@ -39,8 +39,8 @@ fi
 
 (
   cd "$RISC0_ROOT"
-  export CARGO_HOME RUSTUP_HOME RZUP_HOME
-  export PATH="$CARGO_HOME/bin:$RZUP_HOME/extensions/v3.0.5-cargo-risczero-x86_64-unknown-linux-gnu:$PATH"
+  export CARGO_HOME RUSTUP_HOME RISC0_HOME
+  export PATH="$CARGO_HOME/bin:$RISC0_HOME/extensions/v3.0.5-cargo-risczero-x86_64-unknown-linux-gnu:$PATH"
   export RISC0_THREADS="${RISC0_THREADS:-2}"
   cargo build --release --example prover
   ./target/release/examples/prover \
