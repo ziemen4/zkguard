@@ -1,13 +1,13 @@
 # ZKGuard: Noir Implementation
 
-This directory contains a Noir-based zk circuit that implements the ZKGuard policy engine. It validates a user action against a committed policy via a SHA-256 Merkle proof and enforces the rule’s constraints (destination, signer policy, asset, amount limits, optional function selectors). Public outputs commit to the action and reference data so on-chain or off-chain verifiers can check consistency.
+This directory contains a Noir-based zk circuit that implements the ZKGuard policy engine. It validates a user action against a committed policy rule and enforces the rule’s constraints (destination, signer policy, asset, amount limits, optional function selectors). Public outputs commit to the action and reference data so on-chain or off-chain verifiers can check consistency.
 
 ## 🏛️ Architecture
 
-- Merkle membership: The circuit recomputes the policy leaf from the provided `PolicyLine`, hashes it with SHA-256, and verifies inclusion against a public `policy_merkle_root` using a provided Merkle path.
+- Policy commitment: The optimized Noir circuit hashes the single provided `PolicyLine` with Poseidon2 and exposes that value as `policy_hash`. This keeps the current singleton-policy scenario small; multi-rule Merkle membership remains a cross-stack compatibility consideration before using this Noir variant with larger private policy sets.
 - Policy compliance: The circuit classifies the `UserAction` as either a native/erc20 transfer or a contract call, then enforces rule constraints on type, destination pattern (any, group, allowlist), signer policy (any, exact, group, threshold), asset pattern, and optional amount/function selector checks.
 - Cryptography:
-  - SHA-256: Merkle leaf and node hashing.
+  - Poseidon2: Singleton policy-rule commitment.
   - Legacy Keccak-256: Ethereum-specific hashing (action digest, pubkey-to-address derivation, set hashing for groups/allowlists).
   - ECDSA secp256k1: Signature verification via Noir’s `std::ecdsa_secp256k1::verify_signature`.
 
@@ -22,14 +22,13 @@ The circuit takes structured inputs (provided through `Prover.toml`) and returns
 
 - Public outputs (`PublicOutputs`):
   - `call_hash`: Keccak-256 of the user action (`to || value(32) || data[:data_len]`).
-  - `policy_hash`: Alias of `policy_merkle_root` (the committed policy root).
+  - `policy_hash`: Poseidon2 commitment to the provided `PolicyLine`.
   - `groups_hash`, `allow_hash`: Keccak-256 commitments over the non-empty entries of groups and allowlists (address + name-hash pairs).
 
 - Prover inputs (from `Prover.toml`):
   - `rule`: The single `PolicyLine` allegedly allowing the action.
   - `user_action`: Destination, value, calldata, and one or more 65-byte Ethereum signatures.
   - `ctx`: Groups, allowlists, and one pubkey `(x,y)` per signature slot used for signer checks.
-  - `policy_merkle_root`, `policy_merkle_path`: Root and Merkle proof for the rule’s inclusion.
 
 Note on signatures: The circuit converts `{r||s||v}` (65 bytes) into `{r||s}` to feed the verifier. When slots are unused, do not zero-fill signatures or pubkeys. Use the provided generator to create valid-but-non-matching placeholders to avoid gadget warnings and ensure predictable behavior.
 
@@ -68,7 +67,7 @@ Tested toolchain and crate versions for this repo:
 - `bb version = v0.87.0`
 - Noir deps in `Nargo.toml` (pinned):
   - `keccak256` `v0.1.0`
-  - `sha256` `v0.2.1`
+- `poseidon` `v0.2.6`
   - local `ecrecover-noir` path under `ecrecover`
   - local `noir-array-helpers` path under `noir-array-helpers`
 
@@ -99,7 +98,7 @@ Run these commands.
 
 1) Generate inputs (Prover.toml)
 
-Use the shared-config helper to build a consistent `Prover.toml` with safe placeholders and a Merkle singleton for the chosen rule.
+Use the shared-config helper to build a consistent `Prover.toml` with safe signature placeholders and the chosen rule.
 
 ```bash
 python src/generate_shared_prover_toml.py --scenario contributor_payments --out Prover.toml

@@ -66,6 +66,7 @@ We then:
 * `signatures` → padded to `MAX_SIGNATURES` with placeholders.
 * `signer_pubkeys_x/y` → padded to `MAX_SIGNATURES` with placeholder keys.
 * 20‑byte addresses and 32‑byte fields are hex‑formatted as `["0x..", ...]`.
+* The optimized circuit computes the singleton policy commitment internally from `rule`; the generators no longer emit `policy_merkle_root` or `policy_merkle_path`.
 
 ---
 

@@ -6,13 +6,14 @@
 extern crate alloc;
 
 use alloc::string::String;
-use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
+use k256::ecdsa::{signature::hazmat::PrehashVerifier, Signature, VerifyingKey};
 use risc0_zkvm::guest::abort;
-use std::collections::{HashMap, HashSet};
+use std::collections::BTreeMap;
 // Use the standard `tiny-keccak` crate. The [patch] in Cargo.toml will accelerate it.
 use tiny_keccak::{Hasher, Keccak};
 use zkguard_core::{
-    AssetPattern, DestinationPattern, PolicyLine, SignerPattern, TxType, UserAction, ETH_ASSET, hash_user_action_for_signing,
+    hash_user_action_for_signing, AssetPattern, DestinationPattern, PolicyLine, SignerPattern,
+    TxType, UserAction, ETH_ASSET,
 };
 
 /*───────────────────────────────────────────────────────────────────────────*
@@ -50,8 +51,8 @@ fn parse_erc20_transfer(data: &[u8]) -> Option<([u8; 20], u128)> {
 fn match_destination(
     pattern: &DestinationPattern,
     addr: &[u8; 20],
-    groups: &HashMap<String, HashSet<[u8; 20]>>,
-    lists: &HashMap<String, HashSet<[u8; 20]>>,
+    groups: &BTreeMap<String, Vec<[u8; 20]>>,
+    lists: &BTreeMap<String, Vec<[u8; 20]>>,
 ) -> bool {
     match pattern {
         DestinationPattern::Any => true,
@@ -63,27 +64,8 @@ fn match_destination(
     }
 }
 
-/// Recovers the signer's address from a 65-byte (r||s||v) Ethereum-style
-/// signature. Returns `None` on failure.
-fn recover_signer(digest: &[u8; 32], signature: &[u8]) -> Option<[u8; 20]> {
-    if signature.len() != 65 {
-        return None; // Invalid signature length
-    }
-    let (rs, v_byte) = signature.split_at(64);
-    let sig = Signature::try_from(rs).ok()?;
-
-    // Normalize v to 0 or 1 for k256, from 27/28 in Ethereum
-    let v = match v_byte[0] {
-        27 => 0,
-        28 => 1,
-        v_val => v_val,
-    };
-
-    let rec_id = RecoveryId::try_from(v).ok()?;
-
-    let vk = VerifyingKey::recover_from_prehash(digest, &sig, rec_id).ok()?;
+fn address_from_verifying_key(vk: &VerifyingKey) -> [u8; 20] {
     let pk = vk.to_encoded_point(false);
-
     let mut hasher = Keccak::v256();
     let mut keccak_hash = [0u8; 32];
     hasher.update(&pk.as_bytes()[1..]);
@@ -91,16 +73,37 @@ fn recover_signer(digest: &[u8; 32], signature: &[u8]) -> Option<[u8; 20]> {
 
     let mut addr = [0u8; 20];
     addr.copy_from_slice(&keccak_hash[12..]);
-    Some(addr)
+    addr
+}
+
+fn verify_signer_with_key(
+    digest: &[u8; 32],
+    signature: &[u8],
+    verifying_key: &[u8],
+) -> Option<[u8; 20]> {
+    if signature.len() != 65 {
+        return None;
+    }
+    if verifying_key.len() != 65 {
+        return None;
+    }
+    let sig = Signature::try_from(&signature[..64]).ok()?;
+    let vk = VerifyingKey::from_sec1_bytes(verifying_key).ok()?;
+    vk.verify_prehash(digest, &sig).ok()?;
+    Some(address_from_verifying_key(&vk))
 }
 
 /// Evaluate the signer against the signer pattern.
 fn match_signer(
     pattern: &SignerPattern,
     ua: &UserAction,
-    groups: &HashMap<String, HashSet<[u8; 20]>>,
+    groups: &BTreeMap<String, Vec<[u8; 20]>>,
+    verifying_keys: &[Vec<u8>],
 ) -> bool {
     let digest = hash_user_action_for_signing(ua);
+    if ua.signatures.len() != verifying_keys.len() {
+        return false;
+    }
 
     match pattern {
         SignerPattern::Any => !ua.signatures.is_empty(), // Any signature is fine, but there must be at least one.
@@ -108,7 +111,7 @@ fn match_signer(
             if ua.signatures.len() != 1 {
                 return false;
             }
-            recover_signer(&digest, &ua.signatures[0])
+            verify_signer_with_key(&digest, &ua.signatures[0], &verifying_keys[0])
                 .map_or(false, |signer| &signer == required_signer)
         }
         SignerPattern::Group(name) => {
@@ -116,17 +119,17 @@ fn match_signer(
                 return false;
             }
             let group = groups.get(name).expect("missing group");
-            recover_signer(&digest, &ua.signatures[0])
+            verify_signer_with_key(&digest, &ua.signatures[0], &verifying_keys[0])
                 .map_or(false, |signer| group.contains(&signer))
         }
         SignerPattern::Threshold { group, threshold } => {
             let required_group = groups.get(group).expect("missing group for threshold");
-            let mut valid_signers = HashSet::new();
+            let mut valid_signers: Vec<[u8; 20]> = Vec::new();
 
-            for sig in &ua.signatures {
-                if let Some(signer) = recover_signer(&digest, sig) {
-                    if required_group.contains(&signer) {
-                        valid_signers.insert(signer);
+            for (sig, verifying_key) in ua.signatures.iter().zip(verifying_keys.iter()) {
+                if let Some(signer) = verify_signer_with_key(&digest, sig, verifying_key) {
+                    if required_group.contains(&signer) && !valid_signers.contains(&signer) {
+                        valid_signers.push(signer);
                     }
                 }
             }
@@ -177,9 +180,10 @@ fn classify_user_action(user_action: &UserAction) -> (TxType, [u8; 20], [u8; 20]
 /// action precisely matches the single "allow" rule provided by the host.
 pub fn run_policy_checks(
     rule: &PolicyLine,
-    groups: &HashMap<String, HashSet<[u8; 20]>>,
-    allowlists: &HashMap<String, HashSet<[u8; 20]>>,
+    groups: &BTreeMap<String, Vec<[u8; 20]>>,
+    allowlists: &BTreeMap<String, Vec<[u8; 20]>>,
     user_action: &UserAction,
+    verifying_keys: &[Vec<u8>],
 ) -> bool {
     // 1. Classify the user action to determine its type, destination, and asset.
     let (tx_type, dest_addr, asset_addr, amount) = classify_user_action(user_action);
@@ -199,7 +203,7 @@ pub fn run_policy_checks(
 
     // (c) The action's signer(s) must match the rule's signer pattern.
     // This check now includes signature verification.
-    if !match_signer(&rule.signer, user_action, groups) {
+    if !match_signer(&rule.signer, user_action, groups, verifying_keys) {
         return false;
     }
 
