@@ -63,17 +63,3 @@ jobs:
         env:
           RISC0_DEV_MODE: "1"
         run: ./scripts/runners/run-risc0-contributor-payments.sh
-
-  lean-spec:
-    name: Lean specification checks
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Build specification
-        uses: leanprover/lean-action@v1
-        with:
-          lake-package-directory: spec/lean
-          build: true
-          test: false

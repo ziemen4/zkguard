@@ -15,7 +15,6 @@ paper/*.pdf
 
 # Local harness / orchestration residue. Keep out of the public repo.
 .cache/
-spec/lean/.lake/
 AGENTS.md
 docs/
 SPEC.md
