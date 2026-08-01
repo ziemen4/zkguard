@@ -51,22 +51,55 @@ fn selector_to_field(selector: [u8; 4]) -> Field {
 }
 
 fn hash_policy_leaf(rule: PolicyLine) -> Field {
+    let destination_uses_name = (rule.destination.kind == DEST_PATTERN_GROUP)
+        | (rule.destination.kind == DEST_PATTERN_ALLOWLIST);
+    let destination_name = if destination_uses_name { rule.destination.name_hash } else { 0 };
+    let destination_address = if rule.destination.kind == DEST_PATTERN_EXACT {
+        rule.destination.address
+    } else {
+        ETH_ASSET
+    };
+    let signer_address = if rule.signer.kind == SIGNER_PATTERN_EXACT {
+        rule.signer.address
+    } else {
+        ETH_ASSET
+    };
+    let signer_uses_group = (rule.signer.kind == SIGNER_PATTERN_GROUP)
+        | (rule.signer.kind == SIGNER_PATTERN_THRESHOLD);
+    let signer_group = if signer_uses_group { rule.signer.group_name_hash } else { 0 };
+    let signer_threshold = if rule.signer.kind == SIGNER_PATTERN_THRESHOLD {
+        rule.signer.threshold
+    } else {
+        0
+    };
+    let asset_address = if rule.asset.kind == ASSET_PATTERN_EXACT {
+        rule.asset.address
+    } else {
+        ETH_ASSET
+    };
+    let amount_max = if rule.has_amount_max { rule.amount_max } else { 0 };
+    let function_selector = if rule.has_function_selector {
+        rule.function_selector
+    } else {
+        [0; 4]
+    };
+
     Poseidon2::hash(
         [
             rule.tx_type,
             rule.destination.kind,
-            rule.destination.name_hash,
-            address_to_field(rule.destination.address),
+            destination_name,
+            address_to_field(destination_address),
             rule.signer.kind,
-            address_to_field(rule.signer.address),
-            rule.signer.group_name_hash,
-            rule.signer.threshold as Field,
+            address_to_field(signer_address),
+            signer_group,
+            signer_threshold as Field,
             rule.asset.kind,
-            address_to_field(rule.asset.address),
+            address_to_field(asset_address),
             bool_to_field(rule.has_amount_max),
-            rule.amount_max,
+            amount_max,
             bool_to_field(rule.has_function_selector),
-            selector_to_field(rule.function_selector),
+            selector_to_field(function_selector),
         ],
         14,
     )
@@ -222,14 +255,28 @@ fn match_signer(
         );
     }
 
+    let mut any_verified = false;
     let mut valid: u32 = 0;
     for i in 0..MAX_SIGNATURES {
         let active = i < action.signature_count;
-        let value_contribution = active & verified[i] & signer_members[i];
+        any_verified = any_verified | (active & verified[i]);
+
+        let mut is_new_signer = true;
+        for j in 0..MAX_SIGNATURES {
+            let earlier = j < i;
+            let prior_active = j < action.signature_count;
+            let duplicate = earlier
+                & prior_active
+                & verified[j]
+                & (signer_addresses[j] == signer_addresses[i]);
+            is_new_signer = is_new_signer & !duplicate;
+        }
+
+        let value_contribution = active & verified[i] & signer_members[i] & is_new_signer;
         valid += if value_contribution { 1 } else { 0 };
     }
 
-    let any = (pattern.kind == SIGNER_PATTERN_ANY) & (action.signature_count > 0);
+    let any = (pattern.kind == SIGNER_PATTERN_ANY) & any_verified;
     let exact = (pattern.kind == SIGNER_PATTERN_EXACT)
         & exactly_one
         & verified[0]
@@ -252,7 +299,7 @@ fn match_asset(pattern: AssetPattern, asset: [u8; 20]) -> bool {
 // Classify action --> (type, destination, asset, amount(Field))
 fn classify_user_action(action: UserAction) -> (Field, [u8; 20], [u8; 20], Field) {
     let selector = slice_4_from_256(action.data, 0);
-    let is_erc20_transfer = selector == TRANSFER_SELECTOR;
+    let is_erc20_transfer = (action.data_len >= 4) & (selector == TRANSFER_SELECTOR);
 
     let mut out_ty = TX_TYPE_CONTRACT_CALL;
     let mut dest: [u8; 20] = action.to;
@@ -318,7 +365,62 @@ pub fn main(
     user_action: UserAction,
     ctx: VerificationContext,
 ) -> pub PublicOutputs {
+    assert(
+        (rule.tx_type == TX_TYPE_TRANSFER) | (rule.tx_type == TX_TYPE_CONTRACT_CALL),
+        "invalid transaction type",
+    );
+    assert(
+        (rule.destination.kind == DEST_PATTERN_ANY)
+            | (rule.destination.kind == DEST_PATTERN_GROUP)
+            | (rule.destination.kind == DEST_PATTERN_ALLOWLIST)
+            | (rule.destination.kind == DEST_PATTERN_EXACT),
+        "invalid destination pattern",
+    );
+    assert(
+        (rule.signer.kind == SIGNER_PATTERN_ANY)
+            | (rule.signer.kind == SIGNER_PATTERN_EXACT)
+            | (rule.signer.kind == SIGNER_PATTERN_GROUP)
+            | (rule.signer.kind == SIGNER_PATTERN_THRESHOLD),
+        "invalid signer pattern",
+    );
+    assert(
+        (rule.asset.kind == ASSET_PATTERN_ANY) | (rule.asset.kind == ASSET_PATTERN_EXACT),
+        "invalid asset pattern",
+    );
+    assert(
+        (rule.signer.kind != SIGNER_PATTERN_THRESHOLD) | (rule.signer.threshold > 0),
+        "zero signer threshold",
+    );
+    assert(
+        (rule.tx_type != TX_TYPE_TRANSFER) | !rule.has_function_selector,
+        "transfer rule has function selector",
+    );
+    assert(
+        (rule.tx_type != TX_TYPE_CONTRACT_CALL)
+            | (!rule.has_amount_max & (rule.asset.kind == ASSET_PATTERN_ANY)),
+        "contract-call rule has transfer constraints",
+    );
+
     let policy_hash = hash_policy_leaf(rule);
+
+    assert(user_action.data_len <= MAX_CALLDATA_SIZE, "calldata length exceeds buffer");
+    assert(user_action.signature_count <= MAX_SIGNATURES, "signature count exceeds buffer");
+    assert(
+        (user_action.value == 0) | (user_action.data_len == 0),
+        "native value with calldata",
+    );
+
+    // Bytes outside the committed logical calldata cannot influence execution.
+    for i in 0..MAX_CALLDATA_SIZE {
+        assert(
+            (i < user_action.data_len) | (user_action.data[i] == 0),
+            "noncanonical calldata padding",
+        );
+    }
+
+    let action_selector = slice_4_from_256(user_action.data, 0);
+    let has_transfer_selector = (user_action.data_len >= 4) & (action_selector == TRANSFER_SELECTOR);
+    assert(!has_transfer_selector | (user_action.data_len >= 68));
 
     let (tx_type, dest_addr, asset_addr, amount) = classify_user_action(user_action);
     let call_hash = hash_user_action(user_action);
@@ -330,7 +432,10 @@ pub fn main(
     assert(match_destination(rule.destination, dest_addr, ctx));
 
     // (c) signers
-    assert(match_signer(rule.signer, user_action, ctx, call_hash));
+    assert(
+        match_signer(rule.signer, user_action, ctx, call_hash),
+        "signer policy not satisfied",
+    );
 
     // (d) asset
     assert(match_asset(rule.asset, asset_addr));
@@ -346,6 +451,7 @@ pub fn main(
     // (f/g) contract-call selector + wildcard asset for calls
     if tx_type == TX_TYPE_CONTRACT_CALL {
         if rule.has_function_selector {
+            assert(user_action.data_len >= 4);
             let selector = slice_4_from_256(user_action.data, 0);
             assert(selector == rule.function_selector);
         }

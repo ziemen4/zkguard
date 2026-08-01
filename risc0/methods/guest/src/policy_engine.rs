@@ -106,7 +106,14 @@ fn match_signer(
     }
 
     match pattern {
-        SignerPattern::Any => !ua.signatures.is_empty(), // Any signature is fine, but there must be at least one.
+        SignerPattern::Any => {
+            ua.signatures
+                .iter()
+                .zip(verifying_keys.iter())
+                .any(|(sig, verifying_key)| {
+                    verify_signer_with_key(&digest, sig, verifying_key).is_some()
+                })
+        }
         SignerPattern::Exact(required_signer) => {
             if ua.signatures.len() != 1 {
                 return false;
@@ -237,4 +244,56 @@ pub fn run_policy_checks(
 
     // If all checks passed, the user action is allowed by this rule.
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use k256::ecdsa::{signature::hazmat::PrehashSigner, Signature, SigningKey};
+
+    fn action_with_signature(signing_key: &SigningKey) -> UserAction {
+        let mut action = UserAction {
+            from: [0x11; 20],
+            to: [0x22; 20],
+            value: 0,
+            nonce: 7,
+            data: vec![0x12, 0x34, 0x56, 0x78],
+            signatures: Vec::new(),
+        };
+        let digest = hash_user_action_for_signing(&action);
+        let signature: Signature = signing_key.sign_prehash(&digest).unwrap();
+        let mut encoded = signature.to_bytes().to_vec();
+        encoded.push(0);
+        action.signatures.push(encoded);
+        action
+    }
+
+    fn verifying_key_bytes(signing_key: &SigningKey) -> Vec<u8> {
+        signing_key
+            .verifying_key()
+            .to_encoded_point(false)
+            .as_bytes()
+            .to_vec()
+    }
+
+    #[test]
+    fn any_signer_requires_a_valid_signature() {
+        let signing_key = SigningKey::from_slice(&[0x33; 32]).unwrap();
+        let wrong_key = SigningKey::from_slice(&[0x44; 32]).unwrap();
+        let action = action_with_signature(&signing_key);
+        let groups = BTreeMap::new();
+
+        assert!(match_signer(
+            &SignerPattern::Any,
+            &action,
+            &groups,
+            &[verifying_key_bytes(&signing_key)],
+        ));
+        assert!(!match_signer(
+            &SignerPattern::Any,
+            &action,
+            &groups,
+            &[verifying_key_bytes(&wrong_key)],
+        ));
+    }
 }

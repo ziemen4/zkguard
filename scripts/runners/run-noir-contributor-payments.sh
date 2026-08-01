@@ -65,4 +65,28 @@ docker run --rm \
       bb verify -p ./target/proof -k ./target/vk -i ./target/public_inputs
       phase_done verify "$start_ns"
     fi
+
+    cp Prover.toml Prover.valid.toml
+    /tmp/noir-venv/bin/python src/generate_adversarial_prover_tomls.py --out-dir .
+    for adversarial in Prover_adversarial_*.toml; do
+      case "$adversarial" in
+        *duplicate_threshold_signer*|*unverified_any_signer*) expected="signer policy not satisfied" ;;
+        *native_value_with_calldata*) expected="native value with calldata" ;;
+        *uncommitted_erc20_calldata*|*uncommitted_function_selector*) expected="noncanonical calldata padding" ;;
+        *) echo "No expected failure configured for $adversarial" >&2; exit 1 ;;
+      esac
+      cp "$adversarial" Prover.toml
+      if nargo execute >adversarial.log 2>&1; then
+        cat adversarial.log
+        echo "Expected rejection for $adversarial" >&2
+        exit 1
+      fi
+      if ! grep -Fq "$expected" adversarial.log; then
+        cat adversarial.log
+        echo "Unexpected rejection for $adversarial (wanted: $expected)" >&2
+        exit 1
+      fi
+      printf "[security] rejected=%s\n" "$adversarial"
+    done
+    cp Prover.valid.toml Prover.toml
   '

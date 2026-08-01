@@ -5,7 +5,7 @@ This directory contains a Noir-based zk circuit that implements the ZKGuard poli
 ## 🏛️ Architecture
 
 - Policy commitment: The optimized Noir circuit hashes the single provided `PolicyLine` with Poseidon2 and exposes that value as `policy_hash`. This keeps the current singleton-policy scenario small; multi-rule Merkle membership remains a cross-stack compatibility consideration before using this Noir variant with larger private policy sets.
-- Policy compliance: The circuit classifies the `UserAction` as either a native/erc20 transfer or a contract call, then enforces rule constraints on type, destination pattern (any, group, allowlist), signer policy (any, exact, group, threshold), asset pattern, and optional amount/function selector checks.
+- Policy compliance: The circuit classifies the `UserAction` as either a native/ERC-20 transfer or a contract call, then enforces rule constraints on type, destination pattern (any, group, allowlist), signer policy (any, exact, group, threshold), asset pattern, and optional amount/function selector checks. Every signer pattern requires a verified signature, and threshold rules count distinct signer addresses rather than signature slots.
 - Cryptography:
   - Poseidon2: Singleton policy-rule commitment.
   - Legacy Keccak-256: Ethereum-specific hashing (action digest, pubkey-to-address derivation, set hashing for groups/allowlists).
@@ -21,7 +21,7 @@ Key sources:
 The circuit takes structured inputs (provided through `Prover.toml`) and returns public outputs for verification.
 
 - Public outputs (`PublicOutputs`):
-  - `call_hash`: Keccak-256 of the user action (`to || value(32) || data[:data_len]`).
+  - `call_hash`: Keccak-256 of the user action (`from || to || value(32) || data[:data_len]`).
   - `policy_hash`: Poseidon2 commitment to the provided `PolicyLine`.
   - `groups_hash`, `allow_hash`: Keccak-256 commitments over the non-empty entries of groups and allowlists (address + name-hash pairs).
 
@@ -31,6 +31,8 @@ The circuit takes structured inputs (provided through `Prover.toml`) and returns
   - `ctx`: Groups, allowlists, and one pubkey `(x,y)` per signature slot used for signer checks.
 
 Note on signatures: The circuit converts `{r||s||v}` (65 bytes) into `{r||s}` to feed the verifier. When slots are unused, do not zero-fill signatures or pubkeys. Use the provided generator to create valid-but-non-matching placeholders to avoid gadget warnings and ensure predictable behavior.
+
+Calldata is canonical: `data_len` must fit the fixed buffer, all bytes after it must be zero, and any selector or ERC-20 fields inspected by the circuit must fall within the committed prefix. The current action model also rejects nonzero native value combined with calldata, avoiding an ambiguous native-transfer/contract-call classification.
 
 ## ⚙️ Prerequisites
 
@@ -144,6 +146,8 @@ bb verify -p ./target/proof -k ./target/vk
 ```
 
 If you only want to check logic (no proof), `nargo execute` is sufficient.
+
+The repository runner also executes adversarial witnesses covering duplicate threshold signers, invalid `Any` signatures, uncommitted calldata, mixed native value and calldata, and uncommitted function selectors. Each witness must be rejected by the circuit.
 
 ## 🧩 Policy Model (brief)
 
