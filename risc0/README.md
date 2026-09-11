@@ -12,7 +12,7 @@ The zkVM model separates the program into two parts: a **host** and a **guest**.
 
 * **Guest Program** (`methods/guest/src/bin/zkguard_policy.rs`): This is the trusted program whose execution is proven. It runs inside the Risc0 zkVM. The guest receives the inputs from the host and performs the complete two-part verification:
     1.  **Proof of Membership**: It verifies that the provided `PolicyLine` and `MerklePath` correctly compute to the trusted `Merkle Root`. This cryptographically proves that the rule is an authentic part of the established policy set.
-    2.  **Proof of Compliance**: It evaluates the `UserAction` against the now-authenticated `PolicyLine`. This involves checking the transaction type, destination, asset, amount, function selectors, and, critically, verifying all cryptographic signatures against the host-supplied verifying keys before deriving signer addresses from those keys.
+    2.  **Proof of Compliance**: It evaluates the `UserAction` against the now-authenticated `PolicyLine`. This involves checking the transaction type, destination, asset, amount, function selectors, and verifying all cryptographic signatures against the host-supplied verifying keys. Ethereum recovery IDs must recover the same keys, transfer amounts must fit the shared `u128` domain, and calldata cannot carry native value.
 
 If both steps succeed, the zkVM generates a ZKP (`Receipt`) which contains a `Journal`. The guest commits the public hashes of the inputs (`CallHash`, `PolicyMerkleRoot`, `GroupsHash`, `AllowHash`) to this journal, making them available for public verification.
 

@@ -5,10 +5,12 @@ import toml
 from eth_hash.auto import keccak
 from coincurve import PrivateKey
 
+from policy_tree import MAX_MERKLE_DEPTH, build_policy_merkle_path
+
 # ---- Must match your Noir constants ----
 MAX_CALLDATA_SIZE = 256
 MAX_SIGNATURES = 5
-SIGNATURE_SIZE = 65
+SIGNATURE_SIZE = 64
 
 TX_TYPE_TRANSFER = 0
 TX_TYPE_CONTRACT_CALL = 1
@@ -160,7 +162,15 @@ def to_bytearrays(lst: list[bytes], size: int) -> list[bytes]:
             out.append(b)
     return out
 
-def write_toml(user_action, rule, ctx, out_path: str):
+def write_toml(
+    user_action,
+    rule,
+    ctx,
+    out_path: str,
+    *,
+    policy_rules: list[dict] | None = None,
+    selected_rule_index: int = 0,
+):
     # digest was computed in the scenario and stored (not written to TOML)
     digest = user_action["_digest"]
 
@@ -170,8 +180,9 @@ def write_toml(user_action, rule, ctx, out_path: str):
     # --- User action fields
     data_padded = user_action["data"].ljust(MAX_CALLDATA_SIZE, b"\x00")
 
-    # Signatures: real + placeholders to fill up MAX_SIGNATURES
-    real_sigs = user_action["signatures"]  # list[bytes], each 65 bytes
+    # Noir consumes ECDSA (r,s). sign_digest also returns the recovery byte
+    # needed by the RISC Zero backend, so truncate it at this boundary.
+    real_sigs = user_action["signatures"]
     placeholder_block = [ph_sig65] * (MAX_SIGNATURES - len(real_sigs))
     sigs_full = (real_sigs + placeholder_block)[:MAX_SIGNATURES]
     sigs_full = to_bytearrays(sigs_full, SIGNATURE_SIZE)
@@ -192,6 +203,11 @@ def write_toml(user_action, rule, ctx, out_path: str):
         pky += [ph_y] * (MAX_SIGNATURES - len(pky))
     pkx = pkx[:MAX_SIGNATURES]
     pky = pky[:MAX_SIGNATURES]
+
+    committed_rules = policy_rules if policy_rules is not None else [rule]
+    path = build_policy_merkle_path(committed_rules, selected_rule_index)
+    siblings = [f"0x{sibling:064x}" for sibling in path.siblings]
+    siblings += ["0x0"] * (MAX_MERKLE_DEPTH - len(siblings))
 
     toml_data = {
         "user_action": {
@@ -234,6 +250,12 @@ def write_toml(user_action, rule, ctx, out_path: str):
             "signer_pubkeys_x": [format_hex_array(pk, pad_to=32) for pk in pkx],
             "signer_pubkeys_y": [format_hex_array(pk, pad_to=32) for pk in pky],
         },
+        "policy_merkle_path": {
+            "leaf_index": path.leaf_index,
+            "depth": path.depth,
+            "siblings": siblings,
+        },
+        "registered_policy_root": f"0x{path.root:064x}",
     }
 
     # Don't write the digest to TOML

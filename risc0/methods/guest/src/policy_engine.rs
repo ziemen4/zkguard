@@ -6,8 +6,7 @@
 extern crate alloc;
 
 use alloc::string::String;
-use k256::ecdsa::{signature::hazmat::PrehashVerifier, Signature, VerifyingKey};
-use risc0_zkvm::guest::abort;
+use k256::ecdsa::{signature::hazmat::PrehashVerifier, RecoveryId, Signature, VerifyingKey};
 use std::collections::BTreeMap;
 // Use the standard `tiny-keccak` crate. The [patch] in Cargo.toml will accelerate it.
 use tiny_keccak::{Hasher, Keccak};
@@ -39,8 +38,12 @@ fn parse_erc20_transfer(data: &[u8]) -> Option<([u8; 20], u128)> {
     let mut to = [0u8; 20];
     to.copy_from_slice(&data[4 + 12..4 + 32]);
 
-    // `amount` is stored as a 256-bit big-endian integer in the 2nd slot
-    let mut amt_bytes = [0u8; 16]; // lowest 128-bit slice (suffices for most tokens)
+    // Policy limits are u128. Reject amounts outside that domain instead of
+    // silently discarding the upper half of the ABI uint256.
+    if data[4 + 32..4 + 32 + 16].iter().any(|byte| *byte != 0) {
+        return None;
+    }
+    let mut amt_bytes = [0u8; 16];
     amt_bytes.copy_from_slice(&data[4 + 32 + 16..4 + 64]);
     let amount = u128::from_be_bytes(amt_bytes);
 
@@ -57,9 +60,9 @@ fn match_destination(
     match pattern {
         DestinationPattern::Any => true,
         DestinationPattern::Exact(required_addr) => required_addr == addr,
-        DestinationPattern::Group(name) => groups.get(name).map_or(false, |set| set.contains(addr)),
+        DestinationPattern::Group(name) => groups.get(name).is_some_and(|set| set.contains(addr)),
         DestinationPattern::Allowlist(name) => {
-            lists.get(name).map_or(false, |set| set.contains(addr))
+            lists.get(name).is_some_and(|set| set.contains(addr))
         }
     }
 }
@@ -89,6 +92,15 @@ fn verify_signer_with_key(
     }
     let sig = Signature::try_from(&signature[..64]).ok()?;
     let vk = VerifyingKey::from_sec1_bytes(verifying_key).ok()?;
+    let recovery_id = match signature[64] {
+        0 | 1 => RecoveryId::try_from(signature[64]).ok()?,
+        27 | 28 => RecoveryId::try_from(signature[64] - 27).ok()?,
+        _ => return None,
+    };
+    let recovered = VerifyingKey::recover_from_prehash(digest, &sig, recovery_id).ok()?;
+    if recovered != vk {
+        return None;
+    }
     vk.verify_prehash(digest, &sig).ok()?;
     Some(address_from_verifying_key(&vk))
 }
@@ -119,7 +131,7 @@ fn match_signer(
                 return false;
             }
             verify_signer_with_key(&digest, &ua.signatures[0], &verifying_keys[0])
-                .map_or(false, |signer| &signer == required_signer)
+                .is_some_and(|signer| &signer == required_signer)
         }
         SignerPattern::Group(name) => {
             if ua.signatures.len() != 1 {
@@ -127,9 +139,12 @@ fn match_signer(
             }
             let group = groups.get(name).expect("missing group");
             verify_signer_with_key(&digest, &ua.signatures[0], &verifying_keys[0])
-                .map_or(false, |signer| group.contains(&signer))
+                .is_some_and(|signer| group.contains(&signer))
         }
         SignerPattern::Threshold { group, threshold } => {
+            if *threshold == 0 {
+                return false;
+            }
             let required_group = groups.get(group).expect("missing group for threshold");
             let mut valid_signers: Vec<[u8; 20]> = Vec::new();
 
@@ -152,27 +167,28 @@ fn match_asset(pattern: &AssetPattern, asset: &[u8; 20]) -> bool {
     }
 }
 
-fn classify_user_action(user_action: &UserAction) -> (TxType, [u8; 20], [u8; 20], u128) {
+fn classify_user_action(user_action: &UserAction) -> Option<(TxType, [u8; 20], [u8; 20], u128)> {
+    if user_action.value > 0 && !user_action.data.is_empty() {
+        return None;
+    }
     if user_action.value > 0 || is_erc20_transfer(&user_action.data) {
         // Transfer
         if user_action.value > 0 && user_action.data.is_empty() {
             // Native ETH transfer (`CALL` with value, empty calldata)
-            (
+            Some((
                 TxType::Transfer,
                 user_action.to,
                 ETH_ASSET,
                 user_action.value,
-            )
+            ))
         } else {
             // ERC-20 token transfer via `transfer(address,uint256)`
-            match parse_erc20_transfer(&user_action.data) {
-                Some((to, amount)) => (TxType::Transfer, to, user_action.to, amount), // `user_action.to` = token contract
-                None => abort("malformed ERC-20 transfer data"),
-            }
+            parse_erc20_transfer(&user_action.data)
+                .map(|(to, amount)| (TxType::Transfer, to, user_action.to, amount))
         }
     } else {
         // Contract call
-        (TxType::ContractCall, user_action.to, ETH_ASSET, 0) // `asset_addr` ignored for calls
+        Some((TxType::ContractCall, user_action.to, ETH_ASSET, 0))
     }
 }
 
@@ -193,7 +209,9 @@ pub fn run_policy_checks(
     verifying_keys: &[Vec<u8>],
 ) -> bool {
     // 1. Classify the user action to determine its type, destination, and asset.
-    let (tx_type, dest_addr, asset_addr, amount) = classify_user_action(user_action);
+    let Some((tx_type, dest_addr, asset_addr, amount)) = classify_user_action(user_action) else {
+        return false;
+    };
 
     // 2. The host claims this `rule` allows the `user_action`. We now verify this claim.
     // Each check must pass for the action to be considered valid under this rule.
@@ -249,23 +267,48 @@ pub fn run_policy_checks(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use k256::ecdsa::{signature::hazmat::PrehashSigner, Signature, SigningKey};
+    use k256::ecdsa::SigningKey;
 
-    fn action_with_signature(signing_key: &SigningKey) -> UserAction {
-        let mut action = UserAction {
-            from: [0x11; 20],
-            to: [0x22; 20],
-            value: 0,
-            nonce: 7,
-            data: vec![0x12, 0x34, 0x56, 0x78],
-            signatures: Vec::new(),
-        };
+    fn sign_action(mut action: UserAction, signing_key: &SigningKey) -> UserAction {
         let digest = hash_user_action_for_signing(&action);
-        let signature: Signature = signing_key.sign_prehash(&digest).unwrap();
+        let (signature, recovery_id) = signing_key.sign_prehash_recoverable(&digest).unwrap();
         let mut encoded = signature.to_bytes().to_vec();
-        encoded.push(0);
+        encoded.push(recovery_id.to_byte());
         action.signatures.push(encoded);
         action
+    }
+
+    fn contract_call(signing_key: &SigningKey) -> UserAction {
+        sign_action(
+            UserAction {
+                from: [0x11; 20],
+                to: [0x22; 20],
+                value: 0,
+                nonce: 7,
+                data: vec![0x12, 0x34, 0x56, 0x78],
+                signatures: Vec::new(),
+            },
+            signing_key,
+        )
+    }
+
+    fn token_transfer(signing_key: &SigningKey, upper_amount_byte: u8, value: u128) -> UserAction {
+        let mut data = vec![0u8; 68];
+        data[..4].copy_from_slice(&TRANSFER_SELECTOR);
+        data[16..36].copy_from_slice(&[0x22; 20]);
+        data[51] = upper_amount_byte;
+        data[67] = 1;
+        sign_action(
+            UserAction {
+                from: [0x11; 20],
+                to: [0x44; 20],
+                value,
+                nonce: 7,
+                data,
+                signatures: Vec::new(),
+            },
+            signing_key,
+        )
     }
 
     fn verifying_key_bytes(signing_key: &SigningKey) -> Vec<u8> {
@@ -280,7 +323,7 @@ mod tests {
     fn any_signer_requires_a_valid_signature() {
         let signing_key = SigningKey::from_slice(&[0x33; 32]).unwrap();
         let wrong_key = SigningKey::from_slice(&[0x44; 32]).unwrap();
-        let action = action_with_signature(&signing_key);
+        let action = contract_call(&signing_key);
         let groups = BTreeMap::new();
 
         assert!(match_signer(
@@ -294,6 +337,119 @@ mod tests {
             &action,
             &groups,
             &[verifying_key_bytes(&wrong_key)],
+        ));
+    }
+
+    #[test]
+    fn ethereum_recovery_id_must_match_verifying_key() {
+        let signing_key = SigningKey::from_slice(&[0x33; 32]).unwrap();
+        let mut action = contract_call(&signing_key);
+        let verifying_keys = [verifying_key_bytes(&signing_key)];
+        let groups = BTreeMap::new();
+
+        assert!(match_signer(
+            &SignerPattern::Any,
+            &action,
+            &groups,
+            &verifying_keys
+        ));
+        let recovery_id = action.signatures[0][64];
+        action.signatures[0][64] = recovery_id + 27;
+        assert!(match_signer(
+            &SignerPattern::Any,
+            &action,
+            &groups,
+            &verifying_keys
+        ));
+        action.signatures[0][64] = recovery_id ^ 1;
+        assert!(!match_signer(
+            &SignerPattern::Any,
+            &action,
+            &groups,
+            &verifying_keys
+        ));
+        action.signatures[0][64] = 255;
+        assert!(!match_signer(
+            &SignerPattern::Any,
+            &action,
+            &groups,
+            &verifying_keys
+        ));
+    }
+
+    #[test]
+    fn rejects_erc20_amount_above_u128() {
+        let signing_key = SigningKey::from_slice(&[0x33; 32]).unwrap();
+        let action = token_transfer(&signing_key, 1, 0);
+        let rule = PolicyLine {
+            id: 1,
+            tx_type: TxType::Transfer,
+            destination: DestinationPattern::Exact([0x22; 20]),
+            signer: SignerPattern::Any,
+            asset: AssetPattern::Exact([0x44; 20]),
+            amount_max: Some(1),
+            function_selector: None,
+        };
+        assert!(!run_policy_checks(
+            &rule,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &action,
+            &[verifying_key_bytes(&signing_key)],
+        ));
+    }
+
+    #[test]
+    fn rejects_native_value_with_calldata() {
+        let signing_key = SigningKey::from_slice(&[0x33; 32]).unwrap();
+        let action = token_transfer(&signing_key, 0, 1);
+        let rule = PolicyLine {
+            id: 1,
+            tx_type: TxType::Transfer,
+            destination: DestinationPattern::Exact([0x22; 20]),
+            signer: SignerPattern::Any,
+            asset: AssetPattern::Exact([0x44; 20]),
+            amount_max: Some(1),
+            function_selector: None,
+        };
+        assert!(!run_policy_checks(
+            &rule,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &action,
+            &[verifying_key_bytes(&signing_key)],
+        ));
+    }
+
+    #[test]
+    fn rejects_zero_signer_threshold() {
+        let action = UserAction {
+            from: [0x11; 20],
+            to: [0x22; 20],
+            value: 0,
+            nonce: 7,
+            data: vec![0x12, 0x34, 0x56, 0x78],
+            signatures: Vec::new(),
+        };
+        let rule = PolicyLine {
+            id: 1,
+            tx_type: TxType::ContractCall,
+            destination: DestinationPattern::Any,
+            signer: SignerPattern::Threshold {
+                group: "Owners".into(),
+                threshold: 0,
+            },
+            asset: AssetPattern::Any,
+            amount_max: None,
+            function_selector: None,
+        };
+        let groups = BTreeMap::from([("Owners".into(), Vec::new())]);
+        assert!(!run_policy_checks(
+            &rule,
+            &groups,
+            &BTreeMap::new(),
+            &action,
+            &[],
         ));
     }
 }

@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import toml
+
 from generate_prover_toml import (
     ASSET_PATTERN_EXACT,
     DEST_PATTERN_EXACT,
@@ -128,8 +130,79 @@ def main() -> None:
     resign(action, context, keys)
     cases["uncommitted_function_selector"] = (action, rule, context)
 
+    action, rule, context, keys = build_case(
+        "contributor_payments", scenarios, groups, allowlists, rules
+    )
+    rule["has_amount_max"] = True
+    rule["amount_max"] = 1
+    field_modulus = 21888242871839275222246405745257275088548364400416034343698204186575808495617
+    data = bytearray(action["data"])
+    data[36:68] = (field_modulus + 1).to_bytes(32, "big")
+    action["data"] = bytes(data)
+    resign(action, context, keys)
+    cases["erc20_amount_above_u128"] = (action, rule, context)
+
     for name, (action, rule, context) in cases.items():
         write_toml(action, rule, context, str(args.out_dir / f"Prover_adversarial_{name}.toml"))
+
+    # Exercise real depth-three membership against the registered shared-policy
+    # root. These mutations must fail before transaction-policy evaluation.
+    action, rule, context, _ = build_case(
+        "contributor_payments", scenarios, groups, allowlists, rules
+    )
+    ordered_policy = [build_rule(copy.deepcopy(raw_rule)) for raw_rule in rules.values()]
+    selected_index = next(
+        i
+        for i, candidate in enumerate(ordered_policy)
+        if candidate["id"] == rule["id"]
+    )
+    base_path = args.out_dir / "Prover_adversarial_wrong_merkle_sibling.toml"
+    write_toml(
+        action,
+        rule,
+        context,
+        str(base_path),
+        policy_rules=ordered_policy,
+        selected_rule_index=selected_index,
+    )
+    base = toml.load(base_path)
+
+    mutated_witnesses = {}
+    witness = copy.deepcopy(base)
+    witness["policy_merkle_path"]["siblings"][0] = hex(
+        int(witness["policy_merkle_path"]["siblings"][0], 16) + 1
+    )
+    mutated_witnesses["wrong_merkle_sibling"] = witness
+
+    witness = copy.deepcopy(base)
+    witness["policy_merkle_path"]["leaf_index"] ^= 1
+    mutated_witnesses["wrong_merkle_index"] = witness
+
+    witness = copy.deepcopy(base)
+    witness["policy_merkle_path"]["depth"] = 9
+    mutated_witnesses["excessive_merkle_depth"] = witness
+
+    witness = copy.deepcopy(base)
+    witness["registered_policy_root"] = hex(
+        int(witness["registered_policy_root"], 16) + 1
+    )
+    mutated_witnesses["wrong_registered_root"] = witness
+
+    for name, witness in mutated_witnesses.items():
+        output_path = args.out_dir / f"Prover_adversarial_{name}.toml"
+        with open(output_path, "w", encoding="utf-8") as output:
+            toml.dump(witness, output)
+
+    mutated_rule = copy.deepcopy(rule)
+    mutated_rule["id"] += 100
+    write_toml(
+        action,
+        mutated_rule,
+        context,
+        str(args.out_dir / "Prover_adversarial_mutated_rule_id.toml"),
+        policy_rules=ordered_policy,
+        selected_rule_index=selected_index,
+    )
 
 
 if __name__ == "__main__":

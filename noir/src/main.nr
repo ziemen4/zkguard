@@ -3,7 +3,7 @@ mod policy;
 use policy::{
     ASSET_PATTERN_ANY, ASSET_PATTERN_EXACT, AssetPattern, DEST_PATTERN_ALLOWLIST, DEST_PATTERN_ANY,
     DEST_PATTERN_EXACT, DEST_PATTERN_GROUP, DestinationPattern, MAX_CALLDATA_SIZE, MAX_SIGNATURES,
-    PolicyLine, SIGNATURE_SIZE, SIGNER_PATTERN_ANY, SIGNER_PATTERN_EXACT, SIGNER_PATTERN_GROUP,
+    PolicyLine, SIGNER_PATTERN_ANY, SIGNER_PATTERN_EXACT, SIGNER_PATTERN_GROUP,
     SIGNER_PATTERN_THRESHOLD, SignerPattern, TX_TYPE_CONTRACT_CALL, TX_TYPE_TRANSFER, UserAction,
 };
 
@@ -26,6 +26,16 @@ global TRANSFER_SELECTOR: [u8; 4] = [0xa9, 0x05, 0x9c, 0xbb];
 // Pseudo-address for native ETH.
 global ETH_ASSET: [u8; 20] = [0; 20];
 
+// Supports policy sets of up to 256 leaves while keeping the membership
+// circuit bounded and materially smaller than the former SHA-256 path.
+global MAX_MERKLE_DEPTH: u32 = 8;
+
+pub struct MerklePathInput {
+    leaf_index: u32,
+    depth: u32,
+    siblings: [Field; MAX_MERKLE_DEPTH],
+}
+
 fn bool_to_field(b: bool) -> Field {
     if b {
         1
@@ -36,16 +46,16 @@ fn bool_to_field(b: bool) -> Field {
 
 fn address_to_field(address: [u8; 20]) -> Field {
     let mut out: Field = 0;
-    for i in 0..20 {
-        out = (out * 256) + (address[i] as Field);
+    for byte in address {
+        out = (out * 256) + (byte as Field);
     }
     out
 }
 
 fn selector_to_field(selector: [u8; 4]) -> Field {
     let mut out: Field = 0;
-    for i in 0..4 {
-        out = (out * 256) + (selector[i] as Field);
+    for byte in selector {
+        out = (out * 256) + (byte as Field);
     }
     out
 }
@@ -86,6 +96,7 @@ fn hash_policy_leaf(rule: PolicyLine) -> Field {
 
     Poseidon2::hash(
         [
+            rule.id as Field,
             rule.tx_type,
             rule.destination.kind,
             destination_name,
@@ -101,8 +112,27 @@ fn hash_policy_leaf(rule: PolicyLine) -> Field {
             bool_to_field(rule.has_function_selector),
             selector_to_field(function_selector),
         ],
-        14,
+        15,
     )
+}
+
+fn compute_merkle_root(leaf_hash: Field, path: MerklePathInput) -> Field {
+    assert(path.depth <= MAX_MERKLE_DEPTH, "policy path exceeds maximum depth");
+    let mut acc = leaf_hash;
+    let mut idx = path.leaf_index;
+    for i in 0..MAX_MERKLE_DEPTH {
+        if i < path.depth {
+            let sibling = path.siblings[i];
+            acc = if (idx % 2) == 0u32 {
+                Poseidon2::hash([acc, sibling], 2)
+            } else {
+                Poseidon2::hash([sibling, acc], 2)
+            };
+            idx = idx / 2;
+        }
+    }
+    assert(idx == 0, "policy leaf index exceeds path depth");
+    acc
 }
 
 // Minimal verification context (plus pubkeys for each signature slot).
@@ -126,21 +156,17 @@ fn slice_4_from_256(arr: [u8; 256], start: u32) -> [u8; 4] {
     out
 }
 
-fn erc20_amount_bytes(data: [u8; 256]) -> [u8; 32] {
-    let mut out = [0; 32];
-    for i in 0..32 {
-        out[i] = data[36 + i];
+fn erc20_amount(data: [u8; 256]) -> Field {
+    // Policy limits are u128. Reject, rather than truncate or field-reduce,
+    // any ABI uint256 amount outside that domain.
+    let mut amount: Field = 0;
+    for i in 0..16 {
+        assert(data[36 + i] == 0, "ERC-20 amount exceeds u128");
     }
-    out
-}
-
-// Convert an Ethereum 65-byte sig (r||s||v) into 64 bytes (r||s) for std verifier.
-fn sig64_from_eth(sig: [u8; SIGNATURE_SIZE]) -> [u8; 64] {
-    let mut out = [0; 64];
-    for i in 0..64 {
-        out[i] = sig[i];
+    for i in 16..32 {
+        amount = (amount * 256) + (data[36 + i] as Field);
     }
-    out
+    amount
 }
 
 // keccak256(x||y): take last 20 bytes as ETH address.
@@ -237,7 +263,7 @@ fn match_signer(
     let mut verified = [false; MAX_SIGNATURES];
     let mut signer_addresses = [[0u8; 20]; MAX_SIGNATURES];
     for i in 0..MAX_SIGNATURES {
-        let sig = sig64_from_eth(action.signatures[i]);
+        let sig = action.signatures[i];
         let px = ctx.signer_pubkeys_x[i];
         let py = ctx.signer_pubkeys_y[i];
         verified[i] = verify_signature(px, py, sig, digest);
@@ -326,9 +352,7 @@ fn classify_user_action(action: UserAction) -> (Field, [u8; 20], [u8; 20], Field
         // asset is the token contract
         asset = action.to;
 
-        // amount is second arg (32 bytes big-endian) --> Field
-        let amount_be = erc20_amount_bytes(action.data);
-        amount = Field::from_be_bytes::<32>(amount_be);
+        amount = erc20_amount(action.data);
     } else {
         // Generic call
         out_ty = TX_TYPE_CONTRACT_CALL;
@@ -364,6 +388,8 @@ pub fn main(
     rule: PolicyLine,
     user_action: UserAction,
     ctx: VerificationContext,
+    policy_merkle_path: MerklePathInput,
+    registered_policy_root: pub Field,
 ) -> pub PublicOutputs {
     assert(
         (rule.tx_type == TX_TYPE_TRANSFER) | (rule.tx_type == TX_TYPE_CONTRACT_CALL),
@@ -401,7 +427,14 @@ pub fn main(
         "contract-call rule has transfer constraints",
     );
 
-    let policy_hash = hash_policy_leaf(rule);
+    // Policy limits and native values use the shared u128 domain. Enforcing
+    // it here prevents a Field witness from representing an out-of-domain value.
+    let two_pow_128: Field = 340282366920938463463374607431768211456;
+    assert(!rule.has_amount_max | rule.amount_max.lt(two_pow_128), "amount limit exceeds u128");
+    assert(user_action.value.lt(two_pow_128), "native value exceeds u128");
+
+    let policy_hash = compute_merkle_root(hash_policy_leaf(rule), policy_merkle_path);
+    assert(policy_hash == registered_policy_root, "policy root mismatch");
 
     assert(user_action.data_len <= MAX_CALLDATA_SIZE, "calldata length exceeds buffer");
     assert(user_action.signature_count <= MAX_SIGNATURES, "signature count exceeds buffer");
