@@ -4,6 +4,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 docker run --rm \
+  ${ZKGUARD_DOCKER_ARGS:-} \
   -e ZKGUARD_NOIR_PROVE="${ZKGUARD_NOIR_PROVE:-1}" \
   -v "$REPO_ROOT:/repo:ro" \
   ubuntu:24.04 \
@@ -26,13 +27,88 @@ docker run --rm \
 
     python3 -m venv /tmp/noir-venv
     /tmp/noir-venv/bin/pip install -q -r requirements.txt
+    /tmp/noir-venv/bin/python src/test_policy_tree.py
     /tmp/noir-venv/bin/python src/generate_shared_prover_toml.py --scenario contributor_payments --out Prover.toml
 
+    phase_start() {
+      date +%s%N
+    }
+    phase_done() {
+      phase_name="$1"
+      start_ns="$2"
+      elapsed_ns="$(( $(date +%s%N) - start_ns ))"
+      awk -v name="$phase_name" -v ns="$elapsed_ns" "BEGIN { printf(\"[phase] %s_s=%.3f\\n\", name, ns / 1000000000) }"
+    }
+
+    start_ns="$(phase_start)"
     nargo compile
+    phase_done compile "$start_ns"
+    artifact=target/zkguard.json
+    printf "[metrics] bytecode_len=%s artifact_bytes=%s\n" \
+      "$(jq -r ".bytecode | length" "$artifact")" \
+      "$(wc -c < "$artifact")"
+
+    start_ns="$(phase_start)"
     nargo execute
+    phase_done execute "$start_ns"
+    printf "[metrics] witness_bytes=%s\n" "$(wc -c < target/zkguard.gz)"
+
     if [ "$NOIR_PROVE" != "0" ]; then
+      start_ns="$(phase_start)"
       bb write_vk -b ./target/zkguard.json -o target
+      phase_done write_vk "$start_ns"
+
+      start_ns="$(phase_start)"
       bb prove -b ./target/zkguard.json -w ./target/zkguard.gz -o target
+      phase_done prove "$start_ns"
+
+      /tmp/noir-venv/bin/python src/verify_public_policy_root.py \
+        target/public_inputs \
+        --expected-policy-root 0x100e811956318aecd68b8053366c1d32854e580b84c32dfe9ff175619198f10c
+
+      start_ns="$(phase_start)"
       bb verify -p ./target/proof -k ./target/vk -i ./target/public_inputs
+      phase_done verify "$start_ns"
     fi
+
+    cp Prover.toml Prover.valid.toml
+    /tmp/noir-venv/bin/python src/generate_adversarial_prover_tomls.py --out-dir .
+    for adversarial in Prover_adversarial_*.toml; do
+      case "$adversarial" in
+        *duplicate_threshold_signer*|*unverified_any_signer*) expected="signer policy not satisfied" ;;
+        *native_value_with_calldata*) expected="native value with calldata" ;;
+        *erc20_amount_above_u128*) expected="ERC-20 amount exceeds u128" ;;
+        *excessive_merkle_depth*) expected="policy path exceeds maximum depth" ;;
+        *wrong_merkle_sibling*|*wrong_merkle_index*|*wrong_registered_root*|*mutated_rule_id*) expected="policy root mismatch" ;;
+        *uncommitted_erc20_calldata*|*uncommitted_function_selector*) expected="noncanonical calldata padding" ;;
+        *) echo "No expected failure configured for $adversarial" >&2; exit 1 ;;
+      esac
+      cp "$adversarial" Prover.toml
+      if nargo execute >adversarial.log 2>&1; then
+        cat adversarial.log
+        echo "Expected rejection for $adversarial" >&2
+        exit 1
+      fi
+      if ! grep -Fq "$expected" adversarial.log; then
+        cat adversarial.log
+        echo "Unexpected rejection for $adversarial (wanted: $expected)" >&2
+        exit 1
+      fi
+      printf "[security] rejected=%s\n" "$adversarial"
+    done
+
+    /tmp/noir-venv/bin/python src/generate_shared_prover_toml.py --scenario all
+    for scenario in \
+      Prover_contributor_payments.toml \
+      Prover_defi_swaps.toml \
+      Prover_supply_lending.toml \
+      Prover_interact_dapps.toml \
+      Prover_amount_limits.toml \
+      Prover_function_level_controls.toml \
+      Prover_advanced_signer_policies.toml; do
+      cp "$scenario" Prover.toml
+      nargo execute >/dev/null
+      printf "[policy-path] accepted=%s\n" "$scenario"
+    done
+    cp Prover.valid.toml Prover.toml
   '

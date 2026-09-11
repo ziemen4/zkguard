@@ -1,13 +1,13 @@
 # ZKGuard: Noir Implementation
 
-This directory contains a Noir-based zk circuit that implements the ZKGuard policy engine. It validates a user action against a committed policy via a SHA-256 Merkle proof and enforces the rule’s constraints (destination, signer policy, asset, amount limits, optional function selectors). Public outputs commit to the action and reference data so on-chain or off-chain verifiers can check consistency.
+This directory contains a Noir-based zk circuit that implements the ZKGuard policy engine. It validates a user action against a committed policy rule and enforces the rule’s constraints (destination, signer policy, asset, amount limits, optional function selectors). Public outputs commit to the action and reference data so on-chain or off-chain verifiers can check consistency.
 
 ## 🏛️ Architecture
 
-- Merkle membership: The circuit recomputes the policy leaf from the provided `PolicyLine`, hashes it with SHA-256, and verifies inclusion against a public `policy_merkle_root` using a provided Merkle path.
-- Policy compliance: The circuit classifies the `UserAction` as either a native/erc20 transfer or a contract call, then enforces rule constraints on type, destination pattern (any, group, allowlist), signer policy (any, exact, group, threshold), asset pattern, and optional amount/function selector checks.
+- Policy membership: The circuit hashes the provided `PolicyLine` and each Merkle node with Poseidon2, asserts that the result equals the public `registered_policy_root`, and exposes the same value as `policy_hash`. The consuming verifier must pin `registered_policy_root` to the root authorized for the account before accepting a proof.
+- Policy compliance: The circuit classifies the `UserAction` as either a native/ERC-20 transfer or a contract call, then enforces rule constraints on type, destination pattern (any, group, allowlist), signer policy (any, exact, group, threshold), asset pattern, and optional amount/function selector checks. Every signer pattern requires a verified signature, and threshold rules count distinct signer addresses rather than signature slots.
 - Cryptography:
-  - SHA-256: Merkle leaf and node hashing.
+  - Poseidon2: Policy-leaf hashing and Merkle membership.
   - Legacy Keccak-256: Ethereum-specific hashing (action digest, pubkey-to-address derivation, set hashing for groups/allowlists).
   - ECDSA secp256k1: Signature verification via Noir’s `std::ecdsa_secp256k1::verify_signature`.
 
@@ -21,17 +21,24 @@ Key sources:
 The circuit takes structured inputs (provided through `Prover.toml`) and returns public outputs for verification.
 
 - Public outputs (`PublicOutputs`):
-  - `call_hash`: Keccak-256 of the user action (`to || value(32) || data[:data_len]`).
-  - `policy_hash`: Alias of `policy_merkle_root` (the committed policy root).
+  - `call_hash`: Keccak-256 of the user action (`from || to || value(32) || data[:data_len]`).
+  - `policy_hash`: The computed Poseidon2 policy Merkle root. It must equal the root registered by the verifier.
   - `groups_hash`, `allow_hash`: Keccak-256 commitments over the non-empty entries of groups and allowlists (address + name-hash pairs).
 
 - Prover inputs (from `Prover.toml`):
+  - `registered_policy_root`: The public policy root that the authorizer has registered. The circuit constrains the private rule and path to this value; the proof consumer must compare the public input with its own trusted value.
   - `rule`: The single `PolicyLine` allegedly allowing the action.
-  - `user_action`: Destination, value, calldata, and one or more 65-byte Ethereum signatures.
+  - `user_action`: Destination, value, calldata, and one or more 64-byte ECDSA signatures encoded as `{r||s}`.
   - `ctx`: Groups, allowlists, and one pubkey `(x,y)` per signature slot used for signer checks.
-  - `policy_merkle_root`, `policy_merkle_path`: Root and Merkle proof for the rule’s inclusion.
+  - `policy_merkle_path`: The selected rule's Poseidon2 membership witness. The circuit supports depths up to 8 (256 policy leaves). The shared-config generator builds a real path over every rule in `shared/config/policy.json`.
 
-Note on signatures: The circuit converts `{r||s||v}` (65 bytes) into `{r||s}` to feed the verifier. When slots are unused, do not zero-fill signatures or pubkeys. Use the provided generator to create valid-but-non-matching placeholders to avoid gadget warnings and ensure predictable behavior.
+Noir verifies `(r,s)` against the supplied public key, so its input intentionally omits Ethereum's recovery byte `v`. The RISC Zero backend accepts 65-byte `{r||s||v}` signatures and validates recovery. When Noir slots are unused, do not zero-fill signatures or pubkeys. Use the provided generator to create valid-but-non-matching placeholders to avoid gadget warnings and ensure predictable behavior.
+
+`src/policy_tree.py` is the canonical off-circuit tree builder. It preserves the JSON array order, pads the leaves to the next power of two with zero field elements, and emits siblings from leaf to root. `src/test_policy_tree.py` pins the current shared-policy root and tests paths on both sides of depth-one, depth-two, and depth-three trees. Changing policy semantics, rule order, leaf encoding, the Poseidon parameters, or any rule changes the root and requires updating the registered roots. Circuit changes also require regenerating the verification key.
+
+An authorizer must combine proof verification with a comparison between the proof's public policy root and the root trusted for the account. The runner performs this check with `src/verify_public_policy_root.py` on Barretenberg's `public_inputs` before accepting the proof. Production authorizers must perform the equivalent comparison. The script's field indexes are tied to this circuit ABI and must be reviewed if public inputs are reordered.
+
+Calldata is canonical: `data_len` must fit the fixed buffer, all bytes after it must be zero, and any selector or ERC-20 fields inspected by the circuit must fall within the committed prefix. The current action model also rejects nonzero native value combined with calldata. Native values, policy limits, and ERC-20 amounts are constrained to the shared `u128` policy domain.
 
 ## ⚙️ Prerequisites
 
@@ -68,7 +75,7 @@ Tested toolchain and crate versions for this repo:
 - `bb version = v0.87.0`
 - Noir deps in `Nargo.toml` (pinned):
   - `keccak256` `v0.1.0`
-  - `sha256` `v0.2.1`
+  - `poseidon` `v0.2.6`
   - local `ecrecover-noir` path under `ecrecover`
   - local `noir-array-helpers` path under `noir-array-helpers`
 
@@ -99,7 +106,7 @@ Run these commands.
 
 1) Generate inputs (Prover.toml)
 
-Use the shared-config helper to build a consistent `Prover.toml` with safe placeholders and a Merkle singleton for the chosen rule.
+Use the shared-config helper to build a consistent `Prover.toml` with safe signature placeholders and the chosen rule.
 
 ```bash
 python src/generate_shared_prover_toml.py --scenario contributor_payments --out Prover.toml
@@ -145,6 +152,8 @@ bb verify -p ./target/proof -k ./target/vk
 ```
 
 If you only want to check logic (no proof), `nargo execute` is sufficient.
+
+The repository runner also executes adversarial witnesses covering duplicate threshold signers, invalid `Any` signatures, uncommitted calldata, mixed native value and calldata, overflowing ERC-20 amounts, uncommitted function selectors, corrupt Merkle siblings and indexes, excessive path depth, mismatched roots, and mutated rule IDs. Each witness must be rejected by the circuit.
 
 ## 🧩 Policy Model (brief)
 

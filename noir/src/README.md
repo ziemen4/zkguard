@@ -44,7 +44,7 @@ This must match the digest used inside the circuit.
 For the active signer(s), we sign `digest` with the provided private key(s). We also:
 
 * Normalize to low‑s (ensures `s ≤ n/2`).
-* Keep `sig65 = r(32) || s(32) || v(1)`; the circuit will derive `sig64` as needed.
+* Keep `sig65 = r(32) || s(32) || v(1)` internally so the shared signing helper remains compatible with the RISC Zero input format. The Noir TOML writer emits only `r(32) || s(32)`.
 * Extract the uncompressed pubkey `(px,py)` for the active signer entry in `ctx`.
 
 ### 3) Generates safe placeholders for inactive slots
@@ -57,7 +57,7 @@ For each scenario’s digest, we generate a placeholder tuple:
 
 We then:
 
-* Fill all unused signatures with the placeholder signature (65 bytes).
+* Fill all unused signatures with the placeholder signature's 64-byte `(r,s)` prefix.
 * Replace zeroed pubkeys in `ctx.signer_pubkeys_x/y` with the placeholder `(px_B, py_B)`.
 
 ### 4) Pads & formats to TOML
@@ -66,6 +66,8 @@ We then:
 * `signatures` → padded to `MAX_SIGNATURES` with placeholders.
 * `signer_pubkeys_x/y` → padded to `MAX_SIGNATURES` with placeholder keys.
 * 20‑byte addresses and 32‑byte fields are hex‑formatted as `["0x..", ...]`.
+* The shared generator builds the canonical Poseidon2 tree over all rules in JSON order, pads to the next power of two with zero field leaves, and writes the selected rule's path and public `registered_policy_root`.
+* The circuit asserts that the private rule and path compute to `registered_policy_root`. The consuming verifier must pin that public input to its trusted account-policy root.
 
 ---
 
