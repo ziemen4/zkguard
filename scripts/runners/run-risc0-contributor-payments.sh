@@ -6,7 +6,7 @@ RISC0_ROOT="$REPO_ROOT/risc0"
 ARTIFACT_DIR="$REPO_ROOT/artifacts/smokes"
 RAW_LOG="$ARTIFACT_DIR/risc0-contributor_payments.raw.log"
 SMOKE_LOG="$ARTIFACT_DIR/risc0-contributor_payments.log"
-HOST_CACHE="/tmp/risc0-host"
+HOST_CACHE="${ZKGUARD_RISC0_HOST_CACHE:-/tmp/risc0-host}"
 CARGO_HOME="$HOST_CACHE/cargo-home"
 RUSTUP_HOME="$HOST_CACHE/rustup-home"
 RISC0_HOME="${RISC0_HOME:-${HOME}/.risc0}"
@@ -16,7 +16,7 @@ mkdir -p "$ARTIFACT_DIR"
 mkdir -p "$HOST_CACHE"
 
 if [ ! -x "$CARGO_HOME/bin/rzup" ]; then
-  docker run --rm -v "$HOST_CACHE:/out" rust:1.91 bash -lc "cp -a /usr/local/cargo /out/cargo-home && cp -a /usr/local/rustup /out/rustup-home"
+  docker run --rm ${ZKGUARD_DOCKER_ARGS:-} -v "$HOST_CACHE:/out" rust:1.91 bash -lc "cp -a /usr/local/cargo /out/cargo-home && cp -a /usr/local/rustup /out/rustup-home"
 fi
 
 if [ ! -x "$RISC0_HOME/extensions/v3.0.5-cargo-risczero-x86_64-unknown-linux-gnu/r0vm" ]; then
@@ -27,7 +27,7 @@ if [ ! -x "$RISC0_HOME/extensions/v3.0.5-cargo-risczero-x86_64-unknown-linux-gnu
 fi
 
 if [ ! -w "$RISC0_ROOT/target/release/examples/prover" ]; then
-  docker run --rm -v "$RISC0_ROOT:/work" alpine sh -lc "chown -R $(id -u):$(id -g) /work"
+  docker run --rm ${ZKGUARD_DOCKER_ARGS:-} -v "$RISC0_ROOT:/work" alpine sh -lc "chown -R $(id -u):$(id -g) /work"
 fi
 
 rm -f "$RAW_LOG" "$SMOKE_LOG"
@@ -41,7 +41,7 @@ fi
   cd "$RISC0_ROOT"
   export CARGO_HOME RUSTUP_HOME RISC0_HOME
   export PATH="$CARGO_HOME/bin:$RISC0_HOME/extensions/v3.0.5-cargo-risczero-x86_64-unknown-linux-gnu:$PATH"
-  export RISC0_THREADS="${RISC0_THREADS:-2}"
+  export RISC0_THREADS="${RISC0_THREADS:-4}"
   cargo build --release --example prover
   ./target/release/examples/prover \
     --policy-file examples/policy.json \

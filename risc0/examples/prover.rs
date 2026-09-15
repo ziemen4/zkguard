@@ -6,12 +6,11 @@ use clap::Parser;
 use dotenv::dotenv;
 use k256::ecdsa::SigningKey;
 use risc0_zkvm::sha::Digestible;
-use risc0_zkvm::{default_prover, ExecutorEnv, InnerReceipt};
+use risc0_zkvm::{default_prover, ExecutorEnv, InnerReceipt, ReceiptKind};
 use rs_merkle::MerkleTree;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
-use tiny_keccak::{Hasher, Keccak};
 use tracing_subscriber::EnvFilter;
 use zkguard_core::{hash_policy_line_for_merkle_tree, MerklePath, Sha256MerkleHasher, UserAction, PolicyLine, hash_user_action_for_signing};
 use zkguard_methods::{ZKGUARD_POLICY_ELF, ZKGUARD_POLICY_ID};
@@ -103,6 +102,7 @@ async fn run_prover(
     policy: &Vec<zkguard_core::PolicyLine>,
     policy_line: &zkguard_core::PolicyLine,
     user_action: &UserAction,
+    verifying_keys: &Vec<Vec<u8>>,
     groups: &HashMap<String, Vec<[u8; 20]>>,
     allowlists: &HashMap<String, Vec<[u8; 20]>>,
     dev_mode: bool,
@@ -143,6 +143,7 @@ async fn run_prover(
     let root_bytes = encode(&root.to_vec());
     println!("Policy Merkle Root: 0x{}", hex::encode(root));
     let user_action_bytes = encode(user_action);
+    let verifying_key_bytes = encode(verifying_keys);
     let leaf_bytes = encode(policy_line);
     let path_bytes = encode(&merkle_path);
     let group_bytes = encode(groups);
@@ -155,6 +156,7 @@ async fn run_prover(
         let env = ExecutorEnv::builder()
             .write_frame(&root_bytes)
             .write_frame(&user_action_bytes)
+            .write_frame(&verifying_key_bytes)
             .write_frame(&leaf_bytes)
             .write_frame(&path_bytes)
             .write_frame(&group_bytes)
@@ -168,10 +170,20 @@ async fn run_prover(
         } else {
             risc0_zkvm::VerifierContext::default()
         };
+        let receipt_kind = std::env::var("RISC0_RECEIPT_KIND")
+            .unwrap_or_else(|_| "groth16".to_string())
+            .to_ascii_lowercase();
         let prover_opts = if dev_mode {
             risc0_zkvm::ProverOpts::default().with_dev_mode(true)
         } else {
-            risc0_zkvm::ProverOpts::groth16()
+            match receipt_kind.as_str() {
+                "composite" | "stark" | "base" => {
+                    risc0_zkvm::ProverOpts::default().with_receipt_kind(ReceiptKind::Composite)
+                }
+                "succinct" => risc0_zkvm::ProverOpts::succinct(),
+                "groth16" => risc0_zkvm::ProverOpts::groth16(),
+                other => panic!("unsupported RISC0_RECEIPT_KIND={other}"),
+            }
         };
         prover
             .prove_with_ctx(
@@ -192,8 +204,24 @@ async fn run_prover(
     println!("Journal hex: 0x{}", hex::encode(&journal_bytes));
     println!("[{}] Proved!", policy_line.id);
 
-    let onchain_seal = encode_seal(&receipt)?;
-    println!("On-chain seal hex: 0x{}", hex::encode(&onchain_seal));
+    match &receipt.inner {
+        InnerReceipt::Fake(_) | InnerReceipt::Groth16(_) => {
+            let onchain_seal = encode_seal(&receipt)?;
+            println!("On-chain seal hex: 0x{}", hex::encode(&onchain_seal));
+        }
+        InnerReceipt::Composite(_) => {
+            println!("Receipt kind: composite");
+            println!("Receipt seal bytes: {}", receipt.inner.seal_size());
+        }
+        InnerReceipt::Succinct(_) => {
+            println!("Receipt kind: succinct");
+            println!("Receipt seal bytes: {}", receipt.inner.seal_size());
+        }
+        _ => {
+            println!("Receipt kind: other");
+            println!("Receipt seal bytes: {}", receipt.inner.seal_size());
+        }
+    }
     println!(
         "Image ID: 0x{}",
         hex::encode(bytemuck::cast_slice(&ZKGUARD_POLICY_ID))
@@ -295,13 +323,16 @@ async fn main() -> Result<()> {
     let message_hash = hash_user_action_for_signing(&user_action);
 
     let mut signatures: Vec<Vec<u8>> = Vec::new();
+    let mut verifying_keys: Vec<Vec<u8>> = Vec::new();
     for pk_hex in &args.private_keys {
         println!("{}", pk_hex);
         let sk =
             SigningKey::from_slice(&hex::decode(pk_hex.strip_prefix("0x").unwrap_or(pk_hex))?)?;
+        let encoded_vk = sk.verifying_key().to_encoded_point(false);
+        verifying_keys.push(encoded_vk.as_bytes().to_vec());
         let (signature, recovery_id) = sk.sign_prehash_recoverable(&message_hash)?;
         let mut sig_bytes = signature.to_bytes().to_vec();
-        sig_bytes.push(recovery_id.to_byte() + 27);
+        sig_bytes.push(recovery_id.to_byte());
         signatures.push(sig_bytes);
     }
 
@@ -311,6 +342,7 @@ async fn main() -> Result<()> {
         &policy,
         &policy_line,
         &user_action,
+        &verifying_keys,
         &groups,
         &allowlists,
         args.dev_mode,

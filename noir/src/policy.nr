@@ -3,7 +3,10 @@
 // Global constants for fixed-size arrays, a necessity for ZK circuits.
 pub global MAX_CALLDATA_SIZE: u32 = 256;
 pub global MAX_SIGNATURES: u32 = 5;
-pub global SIGNATURE_SIZE: u32 = 65;
+// Noir verifies ECDSA against the supplied public key, so recovery byte `v` is
+// neither needed nor accepted. The RISC Zero backend uses 65-byte recoverable
+// Ethereum signatures because it also validates recovery semantics.
+pub global SIGNATURE_SIZE: u32 = 64;
 
 // Constants to represent enum variants for TxType
 pub global TX_TYPE_TRANSFER: Field = 0;

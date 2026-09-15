@@ -220,6 +220,7 @@ def scenario_to_toml(
     scenario_name: str,
     scenarios: dict[str, Any],
     rules_by_id: dict[int, dict[str, Any]],
+    ordered_rules: list[dict[str, Any]],
     groups: dict[str, list[str]],
     allowlists: dict[str, list[str]],
     out_path: Path,
@@ -233,8 +234,19 @@ def scenario_to_toml(
         raise KeyError(f"rule id {rule_id} from scenario '{scenario_name}' not found in policy")
 
     user_action, ctx = build_user_action_and_ctx(scenario, groups, allowlists)
-    rule = build_rule(rules_by_id[rule_id])
-    write_toml(user_action, rule, ctx, str(out_path))
+    built_rules = [build_rule(raw_rule) for raw_rule in ordered_rules]
+    selected_index = next(
+        i for i, candidate in enumerate(built_rules) if candidate["id"] == rule_id
+    )
+    rule = built_rules[selected_index]
+    write_toml(
+        user_action,
+        rule,
+        ctx,
+        str(out_path),
+        policy_rules=built_rules,
+        selected_rule_index=selected_index,
+    )
 
 
 def main() -> None:
@@ -271,12 +283,12 @@ def main() -> None:
     if args.scenario == "all":
         for name in scenarios.keys():
             out_path = Path(f"Prover_{name}.toml")
-            scenario_to_toml(name, scenarios, rules_by_id, groups, allowlists, out_path)
+            scenario_to_toml(name, scenarios, rules_by_id, policy, groups, allowlists, out_path)
             print(f"Generated {out_path}")
         return
 
     out_path = Path(args.out)
-    scenario_to_toml(args.scenario, scenarios, rules_by_id, groups, allowlists, out_path)
+    scenario_to_toml(args.scenario, scenarios, rules_by_id, policy, groups, allowlists, out_path)
     print(f"Generated {out_path}")
 
 

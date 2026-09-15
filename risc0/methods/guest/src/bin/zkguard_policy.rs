@@ -4,13 +4,12 @@ use alloc::vec::Vec;
 use bincode::Options;
 use risc0_zkvm::guest::{entry, env};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap, HashSet};
-
-use zkguard_core::{MerklePath, PolicyLine, UserAction, hash_abi_encoded_user_action};
+use std::collections::{BTreeMap, HashMap};
+use zkguard_core::{hash_abi_encoded_user_action, MerklePath, PolicyLine, UserAction};
 use zkguard_guest::policy_engine::run_policy_checks;
 
 // Alloy: Solidity ABI definitions/encoding and Ethereum primitive types
-use alloy_primitives::{B256};
+use alloy_primitives::B256;
 use alloy_sol_types::{sol, SolValue};
 
 // Solidity ABI encoding for public input
@@ -30,12 +29,11 @@ sol! {
 }
 
 /// Canonicalises a map of lists: sorts addresses ascending (dedup) and uses
-/// a `BTreeMap` so keys are ordered.  Returns `(canonical, bytes)` where
+/// a `BTreeMap` so keys are ordered. Returns `(canonical, bytes)` where
 /// `bytes` is the bincode serialization of the canonical structure.
 fn canonicalise_lists(
     raw: HashMap<String, Vec<[u8; 20]>>,
 ) -> (BTreeMap<String, Vec<[u8; 20]>>, Vec<u8>) {
-    use bincode::Options;
     let mut canon: BTreeMap<String, Vec<[u8; 20]>> = BTreeMap::new();
     for (k, mut v) in raw {
         v.sort();
@@ -134,6 +132,12 @@ fn main() {
         .deserialize(&bytes_user_action)
         .expect("deserialize UserAction");
 
+    let bytes_verifying_keys: Vec<u8> = env::read_frame();
+    let verifying_keys: Vec<Vec<u8>> = bincode::DefaultOptions::new()
+        .with_fixint_encoding()
+        .deserialize(&bytes_verifying_keys)
+        .expect("deserialize verifying keys");
+
     let bytes_policy_line: Vec<u8> = env::read_frame();
     let policy_line: PolicyLine = bincode::DefaultOptions::new()
         .with_fixint_encoding()
@@ -152,10 +156,6 @@ fn main() {
         .deserialize(&bytes_raw_groups)
         .expect("deserialize Groups");
     let (groups_canon, groups_bytes) = canonicalise_lists(raw_groups);
-    let groups_sets: HashMap<String, HashSet<[u8; 20]>> = groups_canon
-        .iter()
-        .map(|(k, v)| (k.clone(), v.iter().copied().collect()))
-        .collect();
 
     let bytes_raw_allowed: Vec<u8> = env::read_frame();
     let raw_allowed: HashMap<String, Vec<[u8; 20]>> = bincode::DefaultOptions::new()
@@ -163,10 +163,6 @@ fn main() {
         .deserialize(&bytes_raw_allowed)
         .expect("deserialize Allow-lists");
     let (allow_canon, allow_bytes) = canonicalise_lists(raw_allowed);
-    let allow_sets: HashMap<String, HashSet<[u8; 20]>> = allow_canon
-        .iter()
-        .map(|(k, v)| (k.clone(), v.iter().copied().collect()))
-        .collect();
 
     env::log("[ZKGuard] Finished reading inputs.");
 
@@ -177,7 +173,13 @@ fn main() {
         verify_merkle_proof(&policy_merkle_root, &bytes_policy_line, &policy_merkle_path);
     assert!(proof_is_valid, "merkle-proof-invalid");
 
-    let allowed = run_policy_checks(&policy_line, &groups_sets, &allow_sets, &user_action);
+    let allowed = run_policy_checks(
+        &policy_line,
+        &groups_canon,
+        &allow_canon,
+        &user_action,
+        &verifying_keys,
+    );
     assert!(allowed, "policy-violation");
 
     // ──────────────────────────────────────────────────────────────────────
